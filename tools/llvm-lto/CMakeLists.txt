@@ -7,6 +7,7 @@ set(LLVM_LINK_COMPONENTS
   Object
   Support
   Target
+  LazySan
   )
 
 add_llvm_tool(llvm-lto

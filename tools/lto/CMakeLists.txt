@@ -6,6 +6,7 @@ set(LLVM_LINK_COMPONENTS
   MCDisassembler
   Support
   Target
+  LazySan
   )
 
 set(SOURCES
