@@ -234,13 +234,22 @@ void free(void *ptr) {
 /*****************************/
 
 void ls_inc_refcnt(char *p) {
-  node *n = rangetree_search(rangetree_root, p);
+  node *n;
+
+  if (!p)
+    return;
+
+  n = rangetree_search(rangetree_root, p);
   if (n)
     ++n->refcnt;
 }
 
 void ls_dec_refcnt(char *p) {
-  node *n = rangetree_search(rangetree_root, p);
+  node *n;
+  if (!p)
+    return;
+
+  n = rangetree_search(rangetree_root, p);
   if (n) { /* is heap node */
     if (n->refcnt==0)
       printf("[interposer] refcnt is already zero???\n");
