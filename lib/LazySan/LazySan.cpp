@@ -41,14 +41,19 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
 
   IRBuilder<> Builder(&I);
 
-  // decrease ref count
-  LoadInst *PtrBefore = Builder.CreateLoad(I.getPointerOperand());
-  Value *Cast = Builder.CreateBitCast(PtrBefore, Type::getInt8PtrTy(I.getContext()));
-  Builder.CreateCall(DecRC, {Cast});
+  // NOTE: we should increase refcnt before decreasing it..
+  // if it is decreased first, refcnt could become 0 and the quarantine cleared
+  // but if the pointer happens to point to the same object, refcnt will become
+  // one again..
 
   // increase ref count
-  Cast = Builder.CreateBitCast(Ptr, Type::getInt8PtrTy(I.getContext()));
+  Value *Cast = Builder.CreateBitCast(Ptr, Type::getInt8PtrTy(I.getContext()));
   Builder.CreateCall(IncRC, {Cast});
+
+  // decrease ref count
+  LoadInst *PtrBefore = Builder.CreateLoad(I.getPointerOperand());
+  Cast = Builder.CreateBitCast(PtrBefore, Type::getInt8PtrTy(I.getContext()));
+  Builder.CreateCall(DecRC, {Cast});
 }
 
 void LazySanVisitor::visitReturnInst(ReturnInst &I) {
