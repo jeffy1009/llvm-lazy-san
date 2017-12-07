@@ -6,7 +6,14 @@
 #include <string.h>
 
 static void* (*malloc_func)(size_t size) = NULL;
+static void* (*calloc_func)(size_t num, size_t size) = NULL;
 static void (*free_func)(void *ptr) = NULL;
+
+void __attribute__((constructor)) init_funcptrs() {
+  malloc_func = (void *(*)(size_t)) dlsym(RTLD_NEXT, "malloc");
+  calloc_func = (void *(*)(size_t, size_t)) dlsym(RTLD_NEXT, "calloc");
+  free_func = (void (*)(void*)) dlsym(RTLD_NEXT, "free");
+}
 
 /********************/
 /**  Stats  *********/
@@ -162,8 +169,6 @@ void *malloc(size_t size)
 {
   void *ret;
 
-  if(!malloc_func)
-    malloc_func = (void *(*)(size_t)) dlsym(RTLD_NEXT, "malloc");
   ret = malloc_func(size);
   if (!ret)
     printf("[interposer] malloc failed ??????\n");
@@ -175,9 +180,6 @@ void *calloc(size_t num, size_t size)
 {
   void *ret;
 
-  static void* (*calloc_func)(size_t num, size_t size) = NULL;
-  if(!calloc_func)
-    calloc_func = (void *(*)(size_t, size_t)) dlsym(RTLD_NEXT, "calloc");
   ret = calloc_func(num, size);
   if (!ret)
     printf("[interposer] calloc failed ??????\n");
@@ -219,8 +221,6 @@ void free(void *ptr)
     printf("[interposer] double free??????\n");
 
   if (n->refcnt == 0) {
-    if(!free_func)
-      free_func = (void (*)(void*)) dlsym(RTLD_NEXT, "free");
     free_func(ptr);
   } else {
     n->freed = 1;
