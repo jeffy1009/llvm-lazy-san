@@ -1,26 +1,30 @@
 #define _GNU_SOURCE
-#define __USE_GNU
 #include <stdio.h>
 #include <dlfcn.h>
 #include <stdlib.h>
 #include <string.h>
 
+long int alloc_max = 0, alloc_cur = 0;
+long int quarantine_size = 0;
+
 static void* (*malloc_func)(size_t size) = NULL;
 static void* (*calloc_func)(size_t num, size_t size) = NULL;
 static void (*free_func)(void *ptr) = NULL;
+
+void atexit_hook() {
+  printf("PROGRAM TERMINATED!\n");
+  printf("max alloc: %ld, cur alloc: %ld\n", alloc_max, alloc_cur);
+  printf("quarantine: %ld B\n", quarantine_size);
+}
 
 void __attribute__((constructor)) init_funcptrs() {
   malloc_func = (void *(*)(size_t)) dlsym(RTLD_NEXT, "malloc");
   calloc_func = (void *(*)(size_t, size_t)) dlsym(RTLD_NEXT, "calloc");
   free_func = (void (*)(void*)) dlsym(RTLD_NEXT, "free");
+
+  if (atexit(atexit_hook))
+    printf("atexit failed!\n");
 }
-
-/********************/
-/**  Stats  *********/
-/********************/
-
-long int alloc_max = 0, alloc_cur = 0;
-long int quarantine_size = 0;
 
 /********************/
 /**  Tree  **********/
@@ -28,14 +32,14 @@ long int quarantine_size = 0;
 
 typedef struct node{
   struct node * l, * r;
-  void *base, *end;
+  char *base, *end;
   int refcnt;
   int freed;
 } node;
 
 node *rangetree_root = NULL;
 
-node * rangetree_newnode(void *base, void *end) {
+node * rangetree_newnode(char *base, char *end) {
   node * n = malloc_func(sizeof(node));
   n->base = base;
   n->end = end;
@@ -47,7 +51,7 @@ node * rangetree_newnode(void *base, void *end) {
 
 void rangetree_insert(node ** root, node * child) {
   if (!*root) {
-    *root = child;  // tree root not exists
+    *root = child;  /* tree root not exists */
     return;
   }
 
@@ -57,13 +61,13 @@ void rangetree_insert(node ** root, node * child) {
     rangetree_insert( &(*root)->r , child );
 }
 
-// search the node that addr belongs to
-node * rangetree_search(node * root, void *addr) {
+/* search the node that addr belongs to */
+node * rangetree_search(node * root, char *addr) {
   if (root == NULL)
     return NULL;
 
   if (root->base <= addr
-      && addr <= root->end) // allow off-by-1 pointer
+      && addr <= root->end) /* allow off-by-1 pointer */
     return root;
 
   if (addr < root->base)
@@ -75,34 +79,36 @@ node * rangetree_search(node * root, void *addr) {
   return NULL;
 }
 
-
-// search and free
-void rangetree_free(node **root, void *addr) {
+/* search and free */
+void rangetree_free(node **root, char *addr) {
   if (*root == NULL)
     return;
 
   if ((*root)->base <= addr
       && addr <= (*root)->end) {
+    node *next, *par;
     if ((*root)->l == NULL) {
       node *tmp = *root;
       *root = tmp->r;
-      return free_func(tmp);
+      free_func(tmp);
+      return;
     } else if ((*root)->r == NULL) {
       node *tmp = *root;
       *root = tmp->l;
-      return free_func(tmp);
+      free_func(tmp);
+      return;
     }
 
-    node *next = (*root)->r;
+    next = (*root)->r;
     if (next->l == NULL) {
       (*root)->base = next->base;
       (*root)->end = next->end;
       (*root)->refcnt = next->refcnt;
       (*root)->r = next->r;
-      return free_func(next);
+      free_func(next);
+      return;
     }
 
-    node *par;
     while (next->l) {
       par = next;
       next = next->l;
@@ -112,14 +118,19 @@ void rangetree_free(node **root, void *addr) {
     (*root)->end = next->end;
     (*root)->refcnt = next->refcnt;
     par->l = next->r;
-    return free_func(next);
+    free_func(next);
+    return;
   }
 
-  if (addr < (*root)->base)
-    return rangetree_free(&(*root)->l, addr);
+  if (addr < (*root)->base) {
+    rangetree_free(&(*root)->l, addr);
+    return;
+  }
 
-  if ((*root)->end < addr)
-    return rangetree_free(&(*root)->r, addr);
+  if ((*root)->end < addr) {
+    rangetree_free(&(*root)->r, addr);
+    return;
+  }
 
   printf("[interposer] invalid free !!!!!!\n");
   return;
@@ -143,31 +154,19 @@ void rangetree_print(node *root, int depth) {
 /**  Interposer  ****/
 /********************/
 
-int atexit_registered = 0;
+static void alloc_common(char *base, char *end) {
+  node *new;
 
-void atexit_hook() {
-  printf("PROGRAM TERMINATED!\n");
-  printf("max alloc: %ld, cur alloc: %ld\n", alloc_max, alloc_cur);
-  printf("quarantine: %ld B\n", quarantine_size);
-}
-
-static void alloc_common(void *base, void *end) {
   alloc_cur++;
   if (alloc_cur > alloc_max)
     alloc_max = alloc_cur;
-  if (!atexit_registered) {
-    if (atexit(atexit_hook))
-      printf("atexit failed!\n");
-    atexit_registered = 1;
-  }
 
-  node *new = rangetree_newnode(base, end);
+  new = rangetree_newnode(base, end);
   rangetree_insert(&rangetree_root, new);
 }
 
-void *malloc(size_t size)
-{
-  void *ret;
+void *malloc(size_t size) {
+  char *ret;
 
   ret = malloc_func(size);
   if (!ret)
@@ -176,9 +175,8 @@ void *malloc(size_t size)
   return(ret);
 }
 
-void *calloc(size_t num, size_t size)
-{
-  void *ret;
+void *calloc(size_t num, size_t size) {
+  char *ret;
 
   ret = calloc_func(num, size);
   if (!ret)
@@ -187,18 +185,19 @@ void *calloc(size_t num, size_t size)
   return(ret);
 }
 
-void *realloc(void *ptr, size_t size)
-{
-  void *ret;
+void *realloc(void *ptr, size_t size) {
+  char *ret;
+  char *p = (char*)ptr;
+  node *orig;
 
-  if (ptr==NULL)
+  if (p==NULL)
     return malloc(size);
 
-  node *orig = rangetree_search(rangetree_root, ptr);
-  if (orig->base != ptr)
+  orig = rangetree_search(rangetree_root, p);
+  if (orig->base != p)
     printf("[interposer] ptr != base in realloc ??????\n");
-  if ((ptr+size) <= orig->end)
-    return ptr;
+  if ((p+size) <= orig->end)
+    return p;
   /* { */
   /*   static void* (*realloc_func)(void *ptr, size_t size) = NULL; */
   /*   if(!realloc_func) */
@@ -207,15 +206,14 @@ void *realloc(void *ptr, size_t size)
   /*   return(ret); */
   /* } */
 
-  // just malloc
+  /* just malloc */
   ret = malloc(size);
-  memcpy(ret, ptr, orig->end - orig->base);
-  free(ptr);
+  memcpy(ret, p, orig->end - orig->base);
+  free(p);
   return(ret);
 }
 
-void free(void *ptr)
-{
+void free(void *ptr) {
   node *n = rangetree_search(rangetree_root, ptr);
   if (n->freed)
     printf("[interposer] double free??????\n");
@@ -243,12 +241,12 @@ void ls_inc_refcnt(char *p) {
 
 void ls_dec_refcnt(char *p) {
   node *n = rangetree_search(rangetree_root, p);
-  if (n) { // is heap node
+  if (n) { /* is heap node */
     if (n->refcnt==0)
       printf("[interposer] refcnt is already zero???\n");
     --n->refcnt;
     if (n->refcnt==0) {
-      if (n->freed) { // marked to be freed
+      if (n->freed) { /* marked to be freed */
         quarantine_size -= (n->end - n->base);
         free_func(n->base);
       }
