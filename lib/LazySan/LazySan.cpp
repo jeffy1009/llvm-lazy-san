@@ -16,15 +16,82 @@ using namespace llvm;
 namespace {
   class LazySanVisitor : public InstVisitor<LazySanVisitor> {
     SmallVector<AllocaInst *, 8> AllocaInsts;
+    Function *DecRC;
+    Function *IncRC;
 
   public:
-    LazySanVisitor() {}
+    LazySanVisitor(Module &M) {
+      DecRC = M.getFunction("ls_dec_refcnt");
+      IncRC = M.getFunction("ls_inc_refcnt");
+    }
+
+    void handlePointerTy(IRBuilder<> &B, Value *V);
+    void handleArrayTy(IRBuilder<> &B, Value *V, Type *Ty,
+                       SmallVectorImpl<Value *> &Indices);
+    void handleStructTy(IRBuilder<> &B, Value *V, Type *Ty,
+                        SmallVectorImpl<Value *> &Indices);
 
     void visitAllocaInst(AllocaInst &I);
     void visitStoreInst(StoreInst &I);
     void visitReturnInst(ReturnInst &I);
   };
 } // end anonymous namespace
+
+void LazySanVisitor::handlePointerTy(IRBuilder<> &B, Value *V) {
+  LoadInst *Ptr = B.CreateLoad(V);
+  Value *Cast = B.CreateBitCast(Ptr, Type::getInt8PtrTy(V->getContext()));
+  B.CreateCall(DecRC, {Cast});
+}
+
+void LazySanVisitor::handleArrayTy(IRBuilder<> &B, Value *V, Type *Ty,
+                                   SmallVectorImpl<Value *> &Indices) {
+  Type *ElemTy = Ty->getArrayElementType();
+  if (ElemTy->isIntegerTy() || ElemTy->isFloatTy())
+    return;
+
+  if (ElemTy->isPointerTy()) {
+    for (unsigned int i = 0, e = Ty->getArrayNumElements(); i < e; ++i) {
+      SmallVector<Value *, 4> TmpIndices(Indices.begin(), Indices.end());
+      TmpIndices.push_back(B.getInt32(i));
+      handlePointerTy(B, B.CreateInBoundsGEP(V, TmpIndices));
+    }
+    return;
+  } else if (ElemTy->isArrayTy()) {
+    for (unsigned int i = 0, e = Ty->getArrayNumElements(); i < e; ++i) {
+      SmallVector<Value *, 4> TmpIndices(Indices.begin(), Indices.end());
+      TmpIndices.push_back(B.getInt32(i));
+      handleArrayTy(B, V, ElemTy, TmpIndices);
+    }
+  } else {
+    assert(ElemTy->isStructTy());
+    for (unsigned int i = 0, e = Ty->getArrayNumElements(); i < e; ++i) {
+      SmallVector<Value *, 4> TmpIndices(Indices.begin(), Indices.end());
+      TmpIndices.push_back(B.getInt32(i));
+      handleStructTy(B, V, ElemTy, TmpIndices);
+    }
+  }
+}
+
+void LazySanVisitor::handleStructTy(IRBuilder<> &B, Value *V, Type *Ty,
+                                    SmallVectorImpl<Value *> &Indices) {
+  for (unsigned int i = 0, e = Ty->getStructNumElements(); i < e; ++i) {
+    Type *ElemTy = Ty->getStructElementType(i);
+    if (ElemTy->isIntegerTy() || ElemTy->isFloatTy())
+      continue;
+
+    SmallVector<Value *, 4> TmpIndices(Indices.begin(), Indices.end());
+    TmpIndices.push_back(B.getInt32(i));
+
+    if (ElemTy->isPointerTy()) {
+      handlePointerTy(B, B.CreateInBoundsGEP(V, TmpIndices));
+    } else if (ElemTy->isArrayTy()) {
+      handleArrayTy(B, V, ElemTy, TmpIndices);
+    } else {
+      assert(ElemTy->isStructTy());
+      handleStructTy(B, V, ElemTy, TmpIndices);
+    }
+  }
+}
 
 void LazySanVisitor::visitAllocaInst(AllocaInst &I) {
   AllocaInsts.push_back(&I);
@@ -35,9 +102,6 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
   Type *Ty = Ptr->getType();
   if (!Ty->isPointerTy())
     return;
-
-  Function *DecRC = I.getModule()->getFunction("ls_dec_refcnt");
-  Function *IncRC = I.getModule()->getFunction("ls_inc_refcnt");
 
   IRBuilder<> Builder(&I);
 
@@ -57,41 +121,24 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
 }
 
 void LazySanVisitor::visitReturnInst(ReturnInst &I) {
-  Function *DecRC = I.getModule()->getFunction("ls_dec_refcnt");
-
   IRBuilder<> Builder(&I);
 
   for (AllocaInst *AI : AllocaInsts) {
     Type *Ty = AI->getAllocatedType();
     if (Ty->isPointerTy()) {
-      LoadInst *Ptr = Builder.CreateLoad(AI);
-      Value *Cast = Builder.CreateBitCast(Ptr, Type::getInt8PtrTy(I.getContext()));
-      Builder.CreateCall(DecRC, {Cast});
+      handlePointerTy(Builder, AI);
       continue;
     }
 
+    SmallVector<Value *, 2> Indices;
+    Indices.push_back(Builder.getInt32(0));
     if (Ty->isStructTy()) {
-      for (unsigned int i = 0, e = Ty->getStructNumElements(); i < e; ++i) {
-        Type *ElemTy = Ty->getStructElementType(i);
-        if (ElemTy->isPointerTy()) {
-          assert(0);
-          continue;
-        }
-
-        if (ElemTy->isArrayTy()) {
-          ElemTy = ElemTy->getArrayElementType();
-          assert(ElemTy->isIntegerTy());
-          continue;
-        }
-
-        assert(ElemTy->isIntegerTy());
-      }
+      handleStructTy(Builder, AI, Ty, Indices);
+      continue;
     }
 
-    if (Ty->isArrayTy()) {
-      Type *ElemTy = Ty->getArrayElementType();
-      assert(ElemTy->isIntegerTy());
-    }
+    if (Ty->isArrayTy())
+      handleArrayTy(Builder, AI, Ty, Indices);
   }
 }
 
@@ -100,7 +147,7 @@ char LazySan::ID = 0;
 static RegisterPass<LazySan> X("lazy-san", "Lazy Pointer Sanitizer Pass");
 
 bool LazySan::runOnFunction(Function &F) {
-  LazySanVisitor LSV;
+  LazySanVisitor LSV(*F.getParent());
   LSV.visit(F);
 
   // To force linking
