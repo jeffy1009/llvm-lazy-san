@@ -12,6 +12,7 @@ if( LLVM_ENABLE_PIC AND LLVM_BINUTILS_INCDIR )
      Linker
      BitWriter
      IPO
+     LazySan
      )
 
   add_llvm_loadable_module(LLVMgold

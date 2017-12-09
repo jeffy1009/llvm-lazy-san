@@ -53,12 +53,8 @@
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
 #include "llvm/Transforms/ObjCARC.h"
-#include "llvm/LazySan/LazySan.h"
 #include <system_error>
 using namespace llvm;
-
-static cl::opt<bool>
-OptLazySan("lazy-san", cl::init(false), cl::desc("Enable Lazy Sanitization pass"));
 
 const char* LTOCodeGenerator::getVersionString() {
 #ifdef LLVM_VERSION_INFO
@@ -490,9 +486,6 @@ bool LTOCodeGenerator::optimize(bool DisableVerify, bool DisableInline,
   PMB.VerifyOutput = !DisableVerify;
 
   PMB.populateLTOPassManager(passes);
-
-  if (OptLazySan)
-    passes.add(new LazySan());
 
   // Run our queue of passes all at once now, efficiently.
   passes.run(*MergedModule);

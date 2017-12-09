@@ -34,6 +34,7 @@
 #include "llvm/Transforms/IPO/InferFunctionAttrs.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Vectorize.h"
+#include "llvm/LazySan/LazySan.h"
 
 using namespace llvm;
 
@@ -104,6 +105,9 @@ static cl::opt<bool> EnableNonLTOGlobalsModRef(
 static cl::opt<bool> EnableLoopLoadElim(
     "enable-loop-load-elim", cl::init(false), cl::Hidden,
     cl::desc("Enable the new, experimental LoopLoadElimination Pass"));
+
+static cl::opt<bool>
+OptLazySan("lazy-san", cl::init(false), cl::desc("Enable Lazy Sanitization pass"));
 
 PassManagerBuilder::PassManagerBuilder() {
     OptLevel = 2;
@@ -641,6 +645,9 @@ void PassManagerBuilder::populateLTOPassManager(legacy::PassManagerBase &PM) {
 
   if (OptLevel != 0)
     addLateLTOOptimizationPasses(PM);
+
+  if (OptLazySan)
+    PM.add(new LazySan());
 
   if (VerifyOutput)
     PM.add(createVerifierPass());
