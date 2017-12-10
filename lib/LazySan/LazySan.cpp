@@ -111,8 +111,11 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
   // one again..
 
   // increase ref count
+  // mark field as pointer type
   Value *Cast = Builder.CreateBitCast(Ptr, Type::getInt8PtrTy(I.getContext()));
-  Builder.CreateCall(IncRC, {Cast});
+  Value *Cast2 = Builder.CreateBitCast(I.getPointerOperand(),
+                                       Type::getInt8PtrTy(I.getContext()));
+  Builder.CreateCall(IncRC, {Cast, Cast2});
 
   // decrease ref count
   LoadInst *PtrBefore = Builder.CreateLoad(I.getPointerOperand());
@@ -166,7 +169,8 @@ bool LazySan::runOnModule(Module &M) {
                                           {Type::getInt8PtrTy(C)}));
   M.getOrInsertFunction("ls_inc_refcnt",
                         FunctionType::get(Type::getVoidTy(C),
-                                          {Type::getInt8PtrTy(C)}));
+                                          {Type::getInt8PtrTy(C),
+                                              Type::getInt8PtrTy(C)}, false));
   dbgs() << "Hello World!!!\n";
   for (Function &F : M.functions()) {
     if (F.empty())

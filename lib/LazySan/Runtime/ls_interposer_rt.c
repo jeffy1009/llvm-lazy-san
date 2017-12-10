@@ -11,6 +11,8 @@ static void* (*malloc_func)(size_t size) = NULL;
 static void* (*calloc_func)(size_t num, size_t size) = NULL;
 static void (*free_func)(void *ptr) = NULL;
 
+void ls_dec_refcnt(char *p);
+
 void atexit_hook() {
   printf("PROGRAM TERMINATED!\n");
   printf("max alloc: %ld, cur alloc: %ld\n", alloc_max, alloc_cur);
@@ -35,17 +37,23 @@ typedef struct node{
   char *base, *end;
   int refcnt;
   int freed;
+  long int ptrlog[0];
 } node;
 
 node *rangetree_root = NULL;
 
 node * rangetree_newnode(char *base, char *end) {
-  node * n = malloc_func(sizeof(node));
+  node * n;
+  long int size = end - base;
+  long int ptrlog_size = ((size + 8*64 - 1)/(8*64))*8;
+
+  n = malloc_func(sizeof(node) + ptrlog_size);
   n->base = base;
   n->end = end;
   n->refcnt = 0;
   n->freed = 0;
   n->l = n->r = NULL;
+  memset(n->ptrlog, 0, ptrlog_size);
   return n;
 }
 
@@ -214,9 +222,36 @@ void *realloc(void *ptr, size_t size) {
 }
 
 void free(void *ptr) {
-  node *n = rangetree_search(rangetree_root, ptr);
+  node *n;
+  long int size;
+  long int *p, *p_end;
+  long int nword = 0;
+
+  alloc_cur--;
+
+  n = rangetree_search(rangetree_root, ptr);
+  if (!n) {
+    /* there are no dangling pointers to this node,
+       so the node is already removed from the rangetree */
+    /* NOTE: there can be a dangling pointer in the register
+       and that register value could later be stored in memory.
+       Should we handle this case?? */
+    free_func(ptr);
+    return;
+  }
+
   if (n->freed)
     printf("[interposer] double free??????\n");
+
+  size = n->end - n->base;
+  p_end = n->ptrlog + (size+8*64-1)/8/64;
+  for (p = n->ptrlog; p < p_end; p++, nword++) {
+    while (*p) {
+      long int field_offset = 64*nword + __builtin_ctz(*p);
+      ls_dec_refcnt((char*)*((long int*)n->base + field_offset));
+      *p = *p & (*p - 1); /* unset rightmost bit */
+    }
+  }
 
   if (n->refcnt == 0) {
     free_func(ptr);
@@ -224,8 +259,6 @@ void free(void *ptr) {
     n->freed = 1;
     quarantine_size += (n->end - n->base);
   }
-
-  alloc_cur--;
 }
 
 
@@ -233,7 +266,9 @@ void free(void *ptr) {
 /**  Refcnt modification  ****/
 /*****************************/
 
-void ls_inc_refcnt(char *p) {
+/* p - written pointer value
+   dest - store destination */
+void ls_inc_refcnt(char *p, char *dest) {
   node *n;
 
   if (!p)
@@ -242,6 +277,15 @@ void ls_inc_refcnt(char *p) {
   n = rangetree_search(rangetree_root, p);
   if (n)
     ++n->refcnt;
+
+  /* mark pointer type field */
+  n = rangetree_search(rangetree_root, dest);
+  if (n) {
+    long int field_offset = (dest - n->base)/8;
+    long int word = field_offset/64;
+    int rem = field_offset%64;
+    n->ptrlog[word] |= (1 << rem);
+  }
 }
 
 void ls_dec_refcnt(char *p) {
