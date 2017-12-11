@@ -5,7 +5,7 @@
 #include <string.h>
 
 long int alloc_max = 0, alloc_cur = 0;
-long int quarantine_size = 0;
+long int quarantine_size = 0, quarantine_max = 0;
 
 static void* (*malloc_func)(size_t size) = NULL;
 static void* (*calloc_func)(size_t num, size_t size) = NULL;
@@ -16,7 +16,7 @@ void ls_dec_refcnt(char *p);
 void atexit_hook() {
   printf("PROGRAM TERMINATED!\n");
   printf("max alloc: %ld, cur alloc: %ld\n", alloc_max, alloc_cur);
-  printf("quarantine: %ld B\n", quarantine_size);
+  printf("quarantine max: %ld B, cur: %ld B\n", quarantine_max, quarantine_size);
 }
 
 void __attribute__((constructor)) init_funcptrs() {
@@ -168,6 +168,9 @@ static void alloc_common(char *base, char *end) {
   alloc_cur++;
   if (alloc_cur > alloc_max)
     alloc_max = alloc_cur;
+
+  if (quarantine_size > quarantine_max)
+    quarantine_max = quarantine_size;
 
   new = rangetree_newnode(base, end);
   rangetree_insert(&rangetree_root, new);
