@@ -38,6 +38,7 @@ subdirectories =
  TableGen
  Target
  Transforms
+ LazySan
 
 [component_0]
 type = Group

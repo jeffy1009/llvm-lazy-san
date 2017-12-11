@@ -1,0 +1,6 @@
+[component_0]
+type = Library
+name = LazySan
+parent = Libraries
+required_libraries = Core Support ; actually need IPO here but llvm-build gives
+		     	  	  ; an error due to the cyclic dependency
