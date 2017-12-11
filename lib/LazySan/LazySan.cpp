@@ -46,7 +46,7 @@ void LazySanVisitor::handlePointerTy(IRBuilder<> &B, Value *V) {
 void LazySanVisitor::handleArrayTy(IRBuilder<> &B, Value *V, Type *Ty,
                                    SmallVectorImpl<Value *> &Indices) {
   Type *ElemTy = Ty->getArrayElementType();
-  if (ElemTy->isIntegerTy() || ElemTy->isFloatTy())
+  if (ElemTy->isIntegerTy() || ElemTy->isFloatingPointTy())
     return;
 
   if (ElemTy->isPointerTy()) {
@@ -76,7 +76,7 @@ void LazySanVisitor::handleStructTy(IRBuilder<> &B, Value *V, Type *Ty,
                                     SmallVectorImpl<Value *> &Indices) {
   for (unsigned int i = 0, e = Ty->getStructNumElements(); i < e; ++i) {
     Type *ElemTy = Ty->getStructElementType(i);
-    if (ElemTy->isIntegerTy() || ElemTy->isFloatTy())
+    if (ElemTy->isIntegerTy() || ElemTy->isFloatingPointTy())
       continue;
 
     SmallVector<Value *, 4> TmpIndices(Indices.begin(), Indices.end());
