@@ -305,8 +305,10 @@ void ls_dec_refcnt(char *p) {
       if (n->freed) { /* marked to be freed */
         quarantine_size -= (n->end - n->base);
         free_func(n->base);
+        rangetree_free(&rangetree_root, p);
       }
-      rangetree_free(&rangetree_root, p);
+      /* if n is not yet freed, the pointer is probably in some
+         register. */
     }
   }
 }
