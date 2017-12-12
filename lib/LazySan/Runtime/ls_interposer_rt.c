@@ -89,31 +89,30 @@ node * rangetree_search(node * root, char *addr) {
 
 /* search and free */
 void rangetree_free(node **root, char *addr) {
+  node *tmp_root;
+
   if (*root == NULL)
     return;
 
+  tmp_root = *root;
   if ((*root)->base <= addr
       && addr <= (*root)->end) {
     node *next, *par;
     if ((*root)->l == NULL) {
-      node *tmp = *root;
-      *root = tmp->r;
-      free_func(tmp);
+      *root = tmp_root->r;
+      free_func(tmp_root);
       return;
     } else if ((*root)->r == NULL) {
-      node *tmp = *root;
-      *root = tmp->l;
-      free_func(tmp);
+      *root = tmp_root->l;
+      free_func(tmp_root);
       return;
     }
 
     next = (*root)->r;
     if (next->l == NULL) {
-      (*root)->base = next->base;
-      (*root)->end = next->end;
-      (*root)->refcnt = next->refcnt;
-      (*root)->r = next->r;
-      free_func(next);
+      next->l = tmp_root->l;
+      *root = next;
+      free_func(tmp_root);
       return;
     }
 
@@ -122,11 +121,11 @@ void rangetree_free(node **root, char *addr) {
       next = next->l;
     }
 
-    (*root)->base = next->base;
-    (*root)->end = next->end;
-    (*root)->refcnt = next->refcnt;
     par->l = next->r;
-    free_func(next);
+    next->l = tmp_root->l;
+    next->r = tmp_root->r;
+    *root = next;
+    free_func(tmp_root);
     return;
   }
 
