@@ -63,6 +63,10 @@ void rangetree_insert(node ** root, node * child) {
     return;
   }
 
+  if (((*root)->base <= child->base)
+      && (child->base <= (*root)->end))
+    printf("[interposer] existing entry in rangetree!!\n");
+
   if (child->base <= (*root)->base)
     rangetree_insert( &(*root)->l, child );
   else
