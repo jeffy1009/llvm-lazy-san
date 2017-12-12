@@ -261,6 +261,7 @@ void free(void *ptr) {
 
   if (n->refcnt == 0) {
     free_func(ptr);
+    rangetree_free(&rangetree_root, ptr);
   } else {
     n->freed = 1;
     quarantine_size += (n->end - n->base);
