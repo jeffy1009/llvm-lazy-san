@@ -95,6 +95,13 @@ void LazySanVisitor::handleStructTy(IRBuilder<> &B, Value *V, Type *Ty,
 }
 
 void LazySanVisitor::visitAllocaInst(AllocaInst &I) {
+  const DataLayout &DL = I.getModule()->getDataLayout();
+  IRBuilder<> Builder(I.getNextNode());
+  Type *Ty = I.getAllocatedType();
+  assert(Ty->isSized());
+  // TODO: not always initialize
+  Builder.CreateMemSet(&I, Constant::getNullValue(Builder.getInt8Ty()),
+                       DL.getTypeStoreSize(Ty), 0);
   AllocaInsts.push_back(&I);
 }
 
