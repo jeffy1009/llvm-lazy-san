@@ -40,6 +40,7 @@ namespace {
 void LazySanVisitor::handlePointerTy(IRBuilder<> &B, Value *V) {
   LoadInst *Ptr = B.CreateLoad(V);
   Value *Cast = B.CreateBitCast(Ptr, Type::getInt8PtrTy(V->getContext()));
+  // TODO: beware of uninitialized values
   B.CreateCall(DecRC, {Cast});
 }
 
@@ -118,6 +119,7 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
   Builder.CreateCall(IncRC, {Cast, Cast2});
 
   // decrease ref count
+  // TODO: beware of uninitialized values
   LoadInst *PtrBefore = Builder.CreateLoad(I.getPointerOperand());
   Cast = Builder.CreateBitCast(PtrBefore, Type::getInt8PtrTy(I.getContext()));
   Builder.CreateCall(DecRC, {Cast});

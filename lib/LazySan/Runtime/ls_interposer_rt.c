@@ -182,6 +182,7 @@ void *malloc(size_t size) {
   if (!ret)
     printf("[interposer] malloc failed ??????\n");
   alloc_common(ret, ret+size);
+  memset(ret, 0, size);
   return(ret);
 }
 
@@ -192,6 +193,7 @@ void *calloc(size_t num, size_t size) {
   if (!ret)
     printf("[interposer] calloc failed ??????\n");
   alloc_common(ret, ret+num*size);
+  memset(ret, 0, num*size);
   return(ret);
 }
 
