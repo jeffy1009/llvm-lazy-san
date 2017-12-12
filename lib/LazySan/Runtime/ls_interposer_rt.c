@@ -145,8 +145,10 @@ void rangetree_free(node **root, char *addr) {
 
 void rangetree_printnode(node *n, int d) {
   while (d--) printf(" ");
-  printf("[0x%lx, 0x%lx](0x%lx, %ld)\n", (long int)n->base, (long int)n->end,
-         (long int)(n->end - n->base), (long int)(n->end - n->base));
+  printf("0x%lx:[0x%lx, 0x%lx](0x%lx, %ld)#%d%s\n", (long int)n,
+         (long int)n->base, (long int)n->end,
+         (long int)(n->end - n->base), (long int)(n->end - n->base),
+         n->refcnt, n->freed ? "F" : "");
 }
 
 void rangetree_print(node *root, int depth) {
