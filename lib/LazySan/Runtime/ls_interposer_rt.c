@@ -206,7 +206,9 @@ void *calloc(size_t num, size_t size) {
 void *realloc(void *ptr, size_t size) {
   char *ret;
   char *p = (char*)ptr;
-  node *orig;
+  node *orig, *new;
+  long int orig_size;
+  long int ptrlog_size;
 
   if (p==NULL)
     return malloc(size);
@@ -225,9 +227,33 @@ void *realloc(void *ptr, size_t size) {
   /* } */
 
   /* just malloc */
-  ret = malloc(size);
+  ret = malloc_func(size);
+  if (!ret)
+    printf("[interposer] malloc failed ??????\n");
+
+  if (quarantine_size > quarantine_max)
+    quarantine_max = quarantine_size;
+
+  new = rangetree_newnode(ret, ret+size);
+  rangetree_insert(&rangetree_root, new);
+  memset(ret, 0, size);
   memcpy(ret, p, orig->end - orig->base);
-  free(p);
+
+  orig_size = orig->end - orig->base;
+  ptrlog_size = ((orig_size + 8*64 - 1)/(8*64))*8;
+  memcpy(new->ptrlog, orig->ptrlog, ptrlog_size);
+
+  if (orig->freed)
+    printf("[interposer] double free??????\n");
+
+  if (orig->refcnt == 0) {
+    free_func(p);
+    rangetree_free(&rangetree_root, p);
+  } else {
+    orig->freed = 1;
+    quarantine_size += (orig->end - orig->base);
+  }
+
   return(ret);
 }
 
