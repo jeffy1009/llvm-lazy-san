@@ -155,11 +155,14 @@ void rangetree_printnode(node *n, int d) {
          n->refcnt, n->freed ? "F" : "");
 }
 
-void rangetree_print(node *root, int depth) {
+void rangetree_print(node *root, int depth, int maxdepth) {
+  if (depth == maxdepth)
+    return;
+
   if (root != NULL) {
-    rangetree_print(root->l, depth+1);
+    rangetree_print(root->l, depth+1, maxdepth);
     rangetree_printnode(root, depth);
-    rangetree_print(root->r, depth+1);
+    rangetree_print(root->r, depth+1, maxdepth);
   }
 }
 
