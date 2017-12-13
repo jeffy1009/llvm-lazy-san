@@ -5,7 +5,7 @@
 #include <string.h>
 
 long int alloc_max = 0, alloc_cur = 0;
-long int quarantine_size = 0, quarantine_max = 0;
+long int quarantine_size = 0, quarantine_max = 0, quarantine_max_mb = 0;
 
 static void* (*malloc_func)(size_t size) = NULL;
 static void* (*calloc_func)(size_t num, size_t size) = NULL;
@@ -177,8 +177,15 @@ static void alloc_common(char *base, char *end) {
   if (alloc_cur > alloc_max)
     alloc_max = alloc_cur;
 
-  if (quarantine_size > quarantine_max)
+  if (quarantine_size > quarantine_max) {
+    long int quarantine_mb_tmp;
     quarantine_max = quarantine_size;
+    quarantine_mb_tmp = quarantine_max/1024/1024;
+    if (quarantine_mb_tmp > quarantine_max_mb) {
+      quarantine_max_mb = quarantine_mb_tmp;
+      printf("[interposer] quarantine_max = %ld MB\n", quarantine_max_mb);
+    }
+  }
 
   new = rangetree_newnode(base, end);
   rangetree_insert(&rangetree_root, new);
@@ -234,8 +241,15 @@ void *realloc(void *ptr, size_t size) {
   if (!ret)
     printf("[interposer] malloc failed ??????\n");
 
-  if (quarantine_size > quarantine_max)
+  if (quarantine_size > quarantine_max) {
+    long int quarantine_mb_tmp;
     quarantine_max = quarantine_size;
+    quarantine_mb_tmp = quarantine_max/1024/1024;
+    if (quarantine_mb_tmp > quarantine_max_mb) {
+      quarantine_max_mb = quarantine_mb_tmp;
+      printf("[interposer] quarantine_max = %ld MB\n", quarantine_max_mb);
+    }
+  }
 
   new = rangetree_newnode(ret, ret+size);
   rangetree_insert(&rangetree_root, new);
