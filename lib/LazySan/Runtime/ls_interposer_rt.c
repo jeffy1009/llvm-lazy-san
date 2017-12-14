@@ -3,15 +3,14 @@
 #include <dlfcn.h>
 #include <stdlib.h>
 #include <string.h>
+#include "red_black_tree.h"
 
 long int alloc_max = 0, alloc_cur = 0;
 long int quarantine_size = 0, quarantine_max = 0, quarantine_max_mb = 0;
 
-static void* (*malloc_func)(size_t size) = NULL;
-static void* (*calloc_func)(size_t num, size_t size) = NULL;
-static void (*free_func)(void *ptr) = NULL;
-
-void ls_dec_refcnt(char *p);
+void* (*malloc_func)(size_t size) = NULL;
+void* (*calloc_func)(size_t num, size_t size) = NULL;
+void (*free_func)(void *ptr) = NULL;
 
 void atexit_hook() {
   printf("PROGRAM TERMINATED!\n");
@@ -19,7 +18,7 @@ void atexit_hook() {
   printf("quarantine max: %ld B, cur: %ld B\n", quarantine_max, quarantine_size);
 }
 
-void __attribute__((constructor)) init_funcptrs() {
+void __attribute__((constructor)) init_interposer() {
   malloc_func = (void *(*)(size_t)) dlsym(RTLD_NEXT, "malloc");
   calloc_func = (void *(*)(size_t, size_t)) dlsym(RTLD_NEXT, "calloc");
   free_func = (void (*)(void*)) dlsym(RTLD_NEXT, "free");
@@ -28,141 +27,133 @@ void __attribute__((constructor)) init_funcptrs() {
     printf("atexit failed!\n");
 }
 
-/********************/
-/**  Tree  **********/
-/********************/
+/************************/
+/**  Red-Black Tree  ****/
+/************************/
 
-typedef struct node{
-  struct node * l, * r;
+typedef struct rb_key_t {
   char *base, *end;
+} rb_key;
+
+typedef struct rb_info_t {
+  long int size;
   int refcnt;
   int freed;
   long int ptrlog[0];
-} node;
+} rb_info;
 
-node *rangetree_root = NULL;
+rb_red_blk_tree *rb_root = NULL;
+rb_key tmp_rb_key; /* temporary key used for queries */
 
-node * rangetree_newnode(char *base, char *end) {
-  node * n;
-  long int size = end - base;
+rb_key *rb_new_key(char *base, char *end) {
+  rb_key *k = malloc_func(sizeof(rb_key));
+  k->base = base;
+  k->end = end;
+  return k;
+}
+
+rb_info *rb_new_info(long int size) {
+  rb_info *i;
   long int ptrlog_size = ((size + 8*64 - 1)/(8*64))*8;
 
-  n = malloc_func(sizeof(node) + ptrlog_size);
-  n->base = base;
-  n->end = end;
-  n->refcnt = 0;
-  n->freed = 0;
-  n->l = n->r = NULL;
-  memset(n->ptrlog, 0, ptrlog_size);
-  return n;
+  i = malloc_func(sizeof(rb_info) + ptrlog_size);
+  i->size = size;
+  i->refcnt = 0;
+  i->freed = 0;
+  memset(i->ptrlog, 0, ptrlog_size);
+  return i;
 }
 
-void rangetree_insert(node ** root, node * child) {
-  if (!*root) {
-    *root = child;  /* tree root not exists */
+void rb_destroy(void* a) { free_func(a); }
+
+int rb_compare(const void *a, const void *b) {
+  rb_key *akey = (rb_key*)a, *bkey = (rb_key*)b;
+
+  if ((akey->base <= bkey->base)
+      && (bkey->base <= akey->end)) {
+    if ((bkey->base != bkey->end)
+        && !((akey->end < bkey->base) || (bkey->end < akey->base)))
+      printf("[interposer] existing entry with overlaping region!\n");
+    return 0;
+  }
+  if( akey->base > bkey->base) return(1);
+  if( akey->base < bkey->base) return(-1);
+  return(0);
+}
+
+void rbt_print_key(const void* a) {
+  rb_key *key = (rb_key*)a;
+  printf("[0x%lx, 0x%lx]", (long int)key->base, (long int)key->end);
+}
+
+void rbt_print_info(void* a) {
+  rb_info *info = (rb_info*)a;
+  printf("(0x%lx, %ld)#%d%s\n",
+         info->size, info->size, info->refcnt, info->freed ? "F" : "");
+}
+
+void rb_destroy_info(void *a) { free_func(a); }
+
+void __attribute__((constructor)) init_rb_tree() {
+  rb_root = RBTreeCreate(rb_compare, rb_destroy, rb_destroy_info,
+                          rbt_print_key, rbt_print_info);
+}
+
+/*****************************/
+/**  Refcnt modification  ****/
+/*****************************/
+
+/* p - written pointer value
+   dest - store destination */
+void ls_inc_refcnt(char *p, char *dest) {
+  rb_red_blk_node *node;
+
+  if (!p)
     return;
+
+  tmp_rb_key.base = tmp_rb_key.end = p;
+  node = RBExactQuery(rb_root, &tmp_rb_key);
+  if (node) {
+    rb_info *info = node->info;
+    ++info->refcnt;
   }
 
-  if (((*root)->base <= child->base)
-      && (child->base <= (*root)->end))
-    printf("[interposer] existing entry in rangetree!!\n");
-
-  if (child->base <= (*root)->base)
-    rangetree_insert( &(*root)->l, child );
-  else
-    rangetree_insert( &(*root)->r , child );
+  /* mark pointer type field */
+  tmp_rb_key.base = tmp_rb_key.end = dest;
+  node = RBExactQuery(rb_root, &tmp_rb_key);
+  if (node) {
+    rb_key *key = node->key;
+    rb_info *info = node->info;
+    long int field_offset = (dest - key->base)/8;
+    long int word = field_offset/64;
+    int rem = field_offset%64;
+    info->ptrlog[word] |= (1 << rem);
+  }
 }
 
-/* search the node that addr belongs to */
-node * rangetree_search(node * root, char *addr) {
-  if (root == NULL)
-    return NULL;
+void ls_dec_refcnt(char *p) {
+  rb_red_blk_node *node;
 
-  if (root->base <= addr
-      && addr <= root->end) /* allow off-by-1 pointer */
-    return root;
-
-  if (addr < root->base)
-    return rangetree_search(root->l, addr);
-
-  if (root->end < addr)
-    return rangetree_search(root->r, addr);
-
-  return NULL;
-}
-
-/* search and free */
-void rangetree_free(node **root, char *addr) {
-  node *tmp_root;
-
-  if (*root == NULL)
+  if (!p)
     return;
 
-  tmp_root = *root;
-  if ((*root)->base <= addr
-      && addr <= (*root)->end) {
-    node *next, *par;
-    if ((*root)->l == NULL) {
-      *root = tmp_root->r;
-      free_func(tmp_root);
-      return;
-    } else if ((*root)->r == NULL) {
-      *root = tmp_root->l;
-      free_func(tmp_root);
-      return;
+  tmp_rb_key.base = tmp_rb_key.end = p;
+  node = RBExactQuery(rb_root, &tmp_rb_key);
+  if (node) { /* is heap node */
+    rb_key *key = node->key;
+    rb_info *info = node->info;
+    if (info->refcnt==0)
+      printf("[interposer] refcnt is already zero???\n");
+    --info->refcnt;
+    if (info->refcnt==0) {
+      if (info->freed) { /* marked to be freed */
+        quarantine_size -= info->size;
+        free_func(key->base);
+        RBDelete(rb_root, node);
+      }
+      /* if n is not yet freed, the pointer is probably in some
+         register. */
     }
-
-    next = (*root)->r;
-    if (next->l == NULL) {
-      next->l = tmp_root->l;
-      *root = next;
-      free_func(tmp_root);
-      return;
-    }
-
-    while (next->l) {
-      par = next;
-      next = next->l;
-    }
-
-    par->l = next->r;
-    next->l = tmp_root->l;
-    next->r = tmp_root->r;
-    *root = next;
-    free_func(tmp_root);
-    return;
-  }
-
-  if (addr < (*root)->base) {
-    rangetree_free(&(*root)->l, addr);
-    return;
-  }
-
-  if ((*root)->end < addr) {
-    rangetree_free(&(*root)->r, addr);
-    return;
-  }
-
-  printf("[interposer] invalid free !!!!!!\n");
-  return;
-}
-
-void rangetree_printnode(node *n, int d) {
-  while (d--) printf(" ");
-  printf("0x%lx:[0x%lx, 0x%lx](0x%lx, %ld)#%d%s\n", (long int)n,
-         (long int)n->base, (long int)n->end,
-         (long int)(n->end - n->base), (long int)(n->end - n->base),
-         n->refcnt, n->freed ? "F" : "");
-}
-
-void rangetree_print(node *root, int depth, int maxdepth) {
-  if (depth == maxdepth)
-    return;
-
-  if (root != NULL) {
-    rangetree_print(root->l, depth+1, maxdepth);
-    rangetree_printnode(root, depth);
-    rangetree_print(root->r, depth+1, maxdepth);
   }
 }
 
@@ -171,7 +162,8 @@ void rangetree_print(node *root, int depth, int maxdepth) {
 /********************/
 
 static void alloc_common(char *base, char *end) {
-  node *new;
+  rb_key *new_key;
+  rb_info *new_info;
 
   alloc_cur++;
   if (alloc_cur > alloc_max)
@@ -187,8 +179,9 @@ static void alloc_common(char *base, char *end) {
     }
   }
 
-  new = rangetree_newnode(base, end);
-  rangetree_insert(&rangetree_root, new);
+  new_key = rb_new_key(base, end);
+  new_info = rb_new_info(end-base);
+  RBTreeInsert(rb_root, new_key, new_info);
 }
 
 void *malloc(size_t size) {
@@ -214,20 +207,25 @@ void *calloc(size_t num, size_t size) {
 }
 
 void *realloc(void *ptr, size_t size) {
-  char *ret;
   char *p = (char*)ptr;
-  node *orig, *new;
-  long int orig_size;
-  long int ptrlog_size;
+  rb_red_blk_node *orig_node;
+  rb_key *orig_key, *new_key;
+  rb_info *orig_info, *new_info;
+  char *ret;
+  long int orig_size, ptrlog_size;
 
   if (p==NULL)
     return malloc(size);
 
-  orig = rangetree_search(rangetree_root, p);
-  if (orig->base != p)
+  tmp_rb_key.base = tmp_rb_key.end = p;
+  orig_node = RBExactQuery(rb_root, &tmp_rb_key);
+
+  orig_key = orig_node->key;
+  if (orig_key->base != p)
     printf("[interposer] ptr != base in realloc ??????\n");
-  if ((p+size) <= orig->end)
+  if ((p+size) <= orig_key->end)
     return p;
+
   /* { */
   /*   static void* (*realloc_func)(void *ptr, size_t size) = NULL; */
   /*   if(!realloc_func) */
@@ -251,39 +249,45 @@ void *realloc(void *ptr, size_t size) {
     }
   }
 
-  new = rangetree_newnode(ret, ret+size);
-  rangetree_insert(&rangetree_root, new);
+  orig_info = orig_node->info;
+  new_key = rb_new_key(ret, ret+size);
+  new_info = rb_new_info(size);
+  RBTreeInsert(rb_root, new_key, new_info);
+
   memset(ret, 0, size);
-  memcpy(ret, p, orig->end - orig->base);
+  memcpy(ret, p, orig_info->size);
 
-  orig_size = orig->end - orig->base;
+  orig_size = orig_info->size;
   ptrlog_size = ((orig_size + 8*64 - 1)/(8*64))*8;
-  memcpy(new->ptrlog, orig->ptrlog, ptrlog_size);
+  memcpy(new_info->ptrlog, orig_info->ptrlog, ptrlog_size);
 
-  if (orig->freed)
+  if (orig_info->freed)
     printf("[interposer] double free??????\n");
 
-  if (orig->refcnt == 0) {
+  if (orig_info->refcnt == 0) {
     free_func(p);
-    rangetree_free(&rangetree_root, p);
+    RBDelete(rb_root, orig_node);
   } else {
-    orig->freed = 1;
-    quarantine_size += (orig->end - orig->base);
+    orig_info->freed = 1;
+    quarantine_size += orig_size;
   }
 
   return(ret);
 }
 
 void free(void *ptr) {
-  node *n;
   long int size;
   long int *p, *p_end;
   long int nword = 0;
+  rb_red_blk_node *node;
+  rb_key *key;
+  rb_info *info;
 
   alloc_cur--;
 
-  n = rangetree_search(rangetree_root, ptr);
-  if (!n) {
+  tmp_rb_key.base = tmp_rb_key.end = ptr;
+  node = RBExactQuery(rb_root, &tmp_rb_key);
+  if (!node) {
     /* there are no dangling pointers to this node,
        so the node is already removed from the rangetree */
     /* NOTE: there can be a dangling pointer in the register
@@ -293,73 +297,26 @@ void free(void *ptr) {
     return;
   }
 
-  if (n->freed)
+  key = node->key;
+  info = node->info;
+  if (info->freed)
     printf("[interposer] double free??????\n");
 
-  size = n->end - n->base;
-  p_end = n->ptrlog + (size+8*64-1)/8/64;
-  for (p = n->ptrlog; p < p_end; p++, nword++) {
+  size = info->size;
+  p_end = info->ptrlog + (size+8*64-1)/8/64;
+  for (p = info->ptrlog; p < p_end; p++, nword++) {
     while (*p) {
       long int field_offset = 64*nword + __builtin_ctz(*p);
-      ls_dec_refcnt((char*)*((long int*)n->base + field_offset));
+      ls_dec_refcnt((char*)*((long int*)key->base + field_offset));
       *p = *p & (*p - 1); /* unset rightmost bit */
     }
   }
 
-  if (n->refcnt == 0) {
+  if (info->refcnt == 0) {
     free_func(ptr);
-    rangetree_free(&rangetree_root, ptr);
+    RBDelete(rb_root, node);
   } else {
-    n->freed = 1;
-    quarantine_size += (n->end - n->base);
-  }
-}
-
-
-/*****************************/
-/**  Refcnt modification  ****/
-/*****************************/
-
-/* p - written pointer value
-   dest - store destination */
-void ls_inc_refcnt(char *p, char *dest) {
-  node *n;
-
-  if (!p)
-    return;
-
-  n = rangetree_search(rangetree_root, p);
-  if (n)
-    ++n->refcnt;
-
-  /* mark pointer type field */
-  n = rangetree_search(rangetree_root, dest);
-  if (n) {
-    long int field_offset = (dest - n->base)/8;
-    long int word = field_offset/64;
-    int rem = field_offset%64;
-    n->ptrlog[word] |= (1 << rem);
-  }
-}
-
-void ls_dec_refcnt(char *p) {
-  node *n;
-  if (!p)
-    return;
-
-  n = rangetree_search(rangetree_root, p);
-  if (n) { /* is heap node */
-    if (n->refcnt==0)
-      printf("[interposer] refcnt is already zero???\n");
-    --n->refcnt;
-    if (n->refcnt==0) {
-      if (n->freed) { /* marked to be freed */
-        quarantine_size -= (n->end - n->base);
-        free_func(n->base);
-        rangetree_free(&rangetree_root, p);
-      }
-      /* if n is not yet freed, the pointer is probably in some
-         register. */
-    }
+    info->freed = 1;
+    quarantine_size += info->size;
   }
 }
