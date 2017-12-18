@@ -25,73 +25,180 @@ namespace {
       IncRC = M.getFunction("ls_inc_refcnt");
     }
 
-    void handlePointerTy(IRBuilder<> &B, Value *V);
-    void handleArrayTy(IRBuilder<> &B, Value *V, Type *Ty,
-                       SmallVectorImpl<Value *> &Indices);
-    void handleStructTy(IRBuilder<> &B, Value *V, Type *Ty,
-                        SmallVectorImpl<Value *> &Indices);
+    // check*** - Only check for existance of pointer types
+    bool checkArrayTy(Type *Ty);
+    bool checkStructTy(Type *Ty);
+    bool checkTy(Type *Ty);
+
+    // handle*** - insert reference count inc/dec calls
+    void insertRefCntFunc(Instruction *InsertPos, Instruction *InsertPos2,
+                          Value *V, bool ShouldInc);
+    void handleArrayTy(Instruction *InsertPos, Instruction *InsertPos2,
+                       Value *V, Type *Ty, SmallVectorImpl<Value *> &Indices,
+                       bool ShouldInc);
+    void handleStructTy(Instruction *InsertPos, Instruction *InsertPos2,
+                        Value *V, Type *Ty, SmallVectorImpl<Value *> &Indices,
+                        bool ShouldInc);
+    void handleTy(Instruction *InsertPos, Instruction *InsertPos2,
+                  Value *V, bool ShouldInc);
 
     void visitAllocaInst(AllocaInst &I);
     void visitStoreInst(StoreInst &I);
     void visitReturnInst(ReturnInst &I);
+
+    void visitMemIntrinsic(MemIntrinsic &I);
   };
 } // end anonymous namespace
 
-void LazySanVisitor::handlePointerTy(IRBuilder<> &B, Value *V) {
-  LoadInst *Ptr = B.CreateLoad(V);
-  Value *Cast = B.CreateBitCast(Ptr, Type::getInt8PtrTy(V->getContext()));
-  // TODO: beware of uninitialized values
-  B.CreateCall(DecRC, {Cast});
+bool LazySanVisitor::checkArrayTy(Type *Ty) {
+  Type *ElemTy = Ty->getArrayElementType();
+  if (ElemTy->isIntegerTy() || ElemTy->isFloatingPointTy())
+    return false;
+
+  if (ElemTy->isPointerTy())
+    return true;
+
+  if (ElemTy->isArrayTy())
+    return checkArrayTy(ElemTy);
+
+  assert(ElemTy->isStructTy());
+  return checkStructTy(ElemTy);
 }
 
-void LazySanVisitor::handleArrayTy(IRBuilder<> &B, Value *V, Type *Ty,
-                                   SmallVectorImpl<Value *> &Indices) {
+bool LazySanVisitor::checkStructTy(Type *Ty) {
+  for (unsigned int i = 0, e = Ty->getStructNumElements(); i < e; ++i) {
+    Type *ElemTy = Ty->getStructElementType(i);
+    if (ElemTy->isIntegerTy() || ElemTy->isFloatingPointTy())
+      continue;
+    if (ElemTy->isPointerTy()) {
+      return true;
+    } else if (ElemTy->isArrayTy()) {
+      if (checkArrayTy(ElemTy))
+        return true;
+    } else {
+      assert(ElemTy->isStructTy());
+      if (checkStructTy(ElemTy))
+        return true;
+    }
+  }
+  return false;
+}
+
+bool LazySanVisitor::checkTy(Type *Ty) {
+  Type *ElemTy = cast<PointerType>(Ty)->getElementType();
+  if (ElemTy->isPointerTy())
+    return true;
+
+  if (ElemTy->isArrayTy())
+    return checkArrayTy(ElemTy);
+
+  if (ElemTy->isStructTy())
+    return checkStructTy(ElemTy);
+
+  assert(ElemTy->isIntegerTy() || ElemTy->isFloatingPointTy());
+  return false;
+}
+
+void LazySanVisitor::insertRefCntFunc(Instruction *InsertPos,
+                                      Instruction *InsertPos2,
+                                      Value *V, bool ShouldInc) {
+  IRBuilder<> B(InsertPos);
+  LoadInst *Before = B.CreateLoad(V);
+  Value *CastBefore = B.CreateBitCast(Before,
+                                      Type::getInt8PtrTy(V->getContext()));
+  Value *CastV = B.CreateBitCast(V, Type::getInt8PtrTy(V->getContext()));
+  // TODO: beware of uninitialized values
+
+  if (!ShouldInc) {
+    B.CreateCall(DecRC, {CastBefore, CastV});
+    return;
+  }
+
+  B.SetInsertPoint(InsertPos2);
+  B.SetCurrentDebugLocation(InsertPos->getDebugLoc());
+  LoadInst *After = B.CreateLoad(V);
+  Value *CastAfter = B.CreateBitCast(After,
+                                     Type::getInt8PtrTy(V->getContext()));
+  B.CreateCall(IncRC, {CastAfter, CastV});
+  B.CreateCall(DecRC, {CastBefore, CastV});
+}
+
+void LazySanVisitor::handleArrayTy(Instruction *InsertPos,
+                                   Instruction *InsertPos2,
+                                   Value *V, Type *Ty,
+                                   SmallVectorImpl<Value *> &Indices,
+                                   bool ShouldInc) {
   Type *ElemTy = Ty->getArrayElementType();
   if (ElemTy->isIntegerTy() || ElemTy->isFloatingPointTy())
     return;
 
+  IRBuilder<> B(InsertPos);
   if (ElemTy->isPointerTy()) {
     for (unsigned int i = 0, e = Ty->getArrayNumElements(); i < e; ++i) {
       SmallVector<Value *, 4> TmpIndices(Indices.begin(), Indices.end());
       TmpIndices.push_back(B.getInt32(i));
-      handlePointerTy(B, B.CreateInBoundsGEP(V, TmpIndices));
+      insertRefCntFunc(InsertPos, InsertPos2,
+                       B.CreateInBoundsGEP(V, TmpIndices), ShouldInc);
     }
     return;
   } else if (ElemTy->isArrayTy()) {
     for (unsigned int i = 0, e = Ty->getArrayNumElements(); i < e; ++i) {
       SmallVector<Value *, 4> TmpIndices(Indices.begin(), Indices.end());
       TmpIndices.push_back(B.getInt32(i));
-      handleArrayTy(B, V, ElemTy, TmpIndices);
+      handleArrayTy(InsertPos, InsertPos2, V, ElemTy, TmpIndices, ShouldInc);
     }
   } else {
     assert(ElemTy->isStructTy());
     for (unsigned int i = 0, e = Ty->getArrayNumElements(); i < e; ++i) {
       SmallVector<Value *, 4> TmpIndices(Indices.begin(), Indices.end());
       TmpIndices.push_back(B.getInt32(i));
-      handleStructTy(B, V, ElemTy, TmpIndices);
+      handleStructTy(InsertPos, InsertPos2, V, ElemTy, TmpIndices, ShouldInc);
     }
   }
 }
 
-void LazySanVisitor::handleStructTy(IRBuilder<> &B, Value *V, Type *Ty,
-                                    SmallVectorImpl<Value *> &Indices) {
+void LazySanVisitor::handleStructTy(Instruction *InsertPos,
+                                    Instruction *InsertPos2,
+                                    Value *V, Type *Ty,
+                                    SmallVectorImpl<Value *> &Indices,
+                                    bool ShouldInc) {
   for (unsigned int i = 0, e = Ty->getStructNumElements(); i < e; ++i) {
     Type *ElemTy = Ty->getStructElementType(i);
     if (ElemTy->isIntegerTy() || ElemTy->isFloatingPointTy())
       continue;
 
+    IRBuilder<> B(InsertPos);
     SmallVector<Value *, 4> TmpIndices(Indices.begin(), Indices.end());
     TmpIndices.push_back(B.getInt32(i));
 
     if (ElemTy->isPointerTy()) {
-      handlePointerTy(B, B.CreateInBoundsGEP(V, TmpIndices));
+      insertRefCntFunc(InsertPos, InsertPos2,
+                       B.CreateInBoundsGEP(V, TmpIndices), ShouldInc);
     } else if (ElemTy->isArrayTy()) {
-      handleArrayTy(B, V, ElemTy, TmpIndices);
+      handleArrayTy(InsertPos, InsertPos2, V, ElemTy, TmpIndices, ShouldInc);
     } else {
       assert(ElemTy->isStructTy());
-      handleStructTy(B, V, ElemTy, TmpIndices);
+      handleStructTy(InsertPos, InsertPos2, V, ElemTy, TmpIndices, ShouldInc);
     }
   }
+}
+
+void LazySanVisitor::handleTy(Instruction *InsertPos, Instruction *InsertPos2,
+                              Value *V, bool ShouldInc) {
+  Type *Ty = cast<PointerType>(V->getType())->getElementType();
+  if (Ty->isPointerTy())
+    return insertRefCntFunc(InsertPos, InsertPos2, V, ShouldInc);
+
+  IRBuilder<> B(InsertPos);
+  SmallVector<Value *, 2> Indices;
+  Indices.push_back(B.getInt64(0));
+  if (Ty->isArrayTy())
+    return handleArrayTy(InsertPos, InsertPos2, V, Ty, Indices, ShouldInc);
+
+  if (Ty->isStructTy())
+    return handleStructTy(InsertPos, InsertPos2, V, Ty, Indices, ShouldInc);
+
+  assert(Ty->isIntegerTy() || Ty->isFloatingPointTy());
 }
 
 void LazySanVisitor::visitAllocaInst(AllocaInst &I) {
@@ -129,29 +236,53 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
   // TODO: beware of uninitialized values
   LoadInst *PtrBefore = Builder.CreateLoad(I.getPointerOperand());
   Cast = Builder.CreateBitCast(PtrBefore, Type::getInt8PtrTy(I.getContext()));
-  Builder.CreateCall(DecRC, {Cast});
+  Builder.CreateCall(DecRC, {Cast, Cast2});
 }
 
 void LazySanVisitor::visitReturnInst(ReturnInst &I) {
   IRBuilder<> Builder(&I);
 
-  for (AllocaInst *AI : AllocaInsts) {
-    Type *Ty = AI->getAllocatedType();
-    if (Ty->isPointerTy()) {
-      handlePointerTy(Builder, AI);
-      continue;
+  for (AllocaInst *AI : AllocaInsts)
+    handleTy(&I, nullptr, AI, false);
+}
+
+void LazySanVisitor::visitMemIntrinsic(MemIntrinsic &I) {
+  // const DataLayout &DL = I.getModule()->getDataLayout();
+  IRBuilder<> Builder(&I);
+  Value *Dest = I.getDest();
+  if (!checkTy(Dest->getType()))
+    return;
+
+  if (GetElementPtrInst *GEPI = dyn_cast<GetElementPtrInst>(Dest)) {
+    int i = 0, LastNonNull = -1;
+    for (User::const_op_iterator IdxI = GEPI->idx_begin(),
+           IdxE = GEPI->idx_end(); IdxI != IdxE; ++IdxI, ++i) {
+      if (isa<Constant>(*IdxI) && cast<Constant>(*IdxI)->isNullValue())
+        continue;
+      LastNonNull = i;
     }
 
-    SmallVector<Value *, 2> Indices;
-    Indices.push_back(Builder.getInt32(0));
-    if (Ty->isStructTy()) {
-      handleStructTy(Builder, AI, Ty, Indices);
-      continue;
-    }
+    assert(LastNonNull == -1); // getDest should have stripped this off
+    if (LastNonNull == GEPI->getNumIndices()-1)
+      goto out;
 
-    if (Ty->isArrayTy())
-      handleArrayTy(Builder, AI, Ty, Indices);
+    SmallVector<Value *, 2> Indices(GEPI->idx_begin(),
+                                    GEPI->idx_begin()+LastNonNull+1);
+    Type *IdxTy =
+      GetElementPtrInst::getIndexedType(GEPI->getSourceElementType(), Indices);
+    if (!checkTy(IdxTy))
+      return;
+
+    Dest = Builder.CreateInBoundsGEP(Dest, Indices);
+
+    // TODO: check size
+    // Value *Size = I.getArgOperand(2);
+    // assert(DL.getTypeStoreSize(IdxType));
   }
+
+ out:
+  assert(!isa<MemSetInst>(&I));
+  handleTy(&I, I.getNextNode(), Dest, true);
 }
 
 char LazySan::ID = 0;
@@ -175,7 +306,8 @@ bool LazySan::runOnModule(Module &M) {
   LLVMContext &C = M.getContext();
   M.getOrInsertFunction("ls_dec_refcnt",
                         FunctionType::get(Type::getVoidTy(C),
-                                          {Type::getInt8PtrTy(C)}));
+                                          {Type::getInt8PtrTy(C),
+                                              Type::getInt8PtrTy(C)}, false));
   M.getOrInsertFunction("ls_inc_refcnt",
                         FunctionType::get(Type::getVoidTy(C),
                                           {Type::getInt8PtrTy(C),

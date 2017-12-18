@@ -131,7 +131,7 @@ void ls_inc_refcnt(char *p, char *dest) {
   }
 }
 
-void ls_dec_refcnt(char *p) {
+void ls_dec_refcnt(char *p, char *dummy) {
   rb_red_blk_node *node;
 
   if (!p)
@@ -307,7 +307,7 @@ void free(void *ptr) {
   for (p = info->ptrlog; p < p_end; p++, nword++) {
     while (*p) {
       long int field_offset = 64*nword + __builtin_ctz(*p);
-      ls_dec_refcnt((char*)*((long int*)key->base + field_offset));
+      ls_dec_refcnt((char*)*((long int*)key->base + field_offset), 0);
       *p = *p & (*p - 1); /* unset rightmost bit */
     }
   }
