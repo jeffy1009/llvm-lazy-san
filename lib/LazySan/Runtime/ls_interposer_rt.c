@@ -142,10 +142,10 @@ void ls_dec_refcnt(char *p) {
   if (node) { /* is heap node */
     rb_key *key = node->key;
     rb_info *info = node->info;
-    if (info->refcnt==0)
-      printf("[interposer] refcnt is already zero???\n");
+    if (info->refcnt<=0)
+      printf("[interposer] refcnt <= 0???\n");
     --info->refcnt;
-    if (info->refcnt==0) {
+    if (info->refcnt<=0) {
       if (info->freed) { /* marked to be freed */
         quarantine_size -= info->size;
         free_func(key->base);
@@ -264,7 +264,7 @@ void *realloc(void *ptr, size_t size) {
   if (orig_info->freed)
     printf("[interposer] double free??????\n");
 
-  if (orig_info->refcnt == 0) {
+  if (orig_info->refcnt <= 0) {
     free_func(p);
     RBDelete(rb_root, orig_node);
   } else {
@@ -312,7 +312,7 @@ void free(void *ptr) {
     }
   }
 
-  if (info->refcnt == 0) {
+  if (info->refcnt <= 0) {
     free_func(ptr);
     RBDelete(rb_root, node);
   } else {
