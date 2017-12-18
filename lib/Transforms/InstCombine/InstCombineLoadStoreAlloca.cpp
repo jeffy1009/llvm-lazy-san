@@ -495,6 +495,8 @@ static Instruction *combineLoadToOperationType(InstCombiner &IC, LoadInst &LI) {
     }
   }
 
+  // [lazy-san] avoid folding bitcast for easier analysis
+  return nullptr;
   // Fold away bit casts of the loaded value by loading the desired type.
   // We can do this for BitCastInsts as well as casts from and to pointer types,
   // as long as those are noops (i.e., the source or dest type have the same
