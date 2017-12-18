@@ -262,7 +262,7 @@ void LazySanVisitor::visitMemIntrinsic(MemIntrinsic &I) {
       LastNonNull = i;
     }
 
-    assert(LastNonNull == -1); // getDest should have stripped this off
+    assert(LastNonNull != -1); // getDest should have stripped this off
     if (LastNonNull == GEPI->getNumIndices()-1)
       goto out;
 
