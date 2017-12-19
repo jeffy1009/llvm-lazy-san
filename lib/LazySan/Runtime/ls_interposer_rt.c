@@ -85,12 +85,12 @@ int rb_compare(const void *a, const void *b) {
   return(0);
 }
 
-void rbt_print_key(const void* a) {
+void rb_print_key(const void* a) {
   rb_key *key = (rb_key*)a;
   printf("[0x%lx, 0x%lx]", (long int)key->base, (long int)key->end);
 }
 
-void rbt_print_info(void* a) {
+void rb_print_info(void* a) {
   rb_info *info = (rb_info*)a;
   printf("(0x%lx, %ld)#%d%s\n",
          info->size, info->size, info->refcnt, info->freed ? "F" : "");
@@ -100,7 +100,7 @@ void rb_destroy_info(void *a) { free_func(a); }
 
 void __attribute__((constructor)) init_rb_tree() {
   rb_root = RBTreeCreate(rb_compare, rb_destroy, rb_destroy_info,
-                          rbt_print_key, rbt_print_info);
+                          rb_print_key, rb_print_info);
 }
 
 /*****************************/
