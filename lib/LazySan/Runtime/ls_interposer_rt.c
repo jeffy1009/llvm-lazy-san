@@ -127,7 +127,7 @@ void ls_inc_refcnt(char *p, char *dest) {
     long int field_offset = (dest - key->base)/8;
     long int word = field_offset/64;
     int rem = field_offset%64;
-    info->ptrlog[word] |= (1 << rem);
+    info->ptrlog[word] |= (1UL << rem);
   }
 }
 
