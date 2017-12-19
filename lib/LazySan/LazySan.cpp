@@ -281,8 +281,12 @@ void LazySanVisitor::visitMemIntrinsic(MemIntrinsic &I) {
   }
 
  out:
-  assert(!isa<MemSetInst>(&I));
-  handleTy(&I, I.getNextNode(), Dest, true);
+  if (MemSetInst *MSI = dyn_cast<MemSetInst>(&I)) {
+    Value *V = MSI->getValue();
+    assert(isa<ConstantInt>(V) && cast<Constant>(V)->isNullValue());
+  }
+
+  handleTy(&I, I.getNextNode(), Dest, isa<MemSetInst>(&I) ? false : true);
 }
 
 char LazySan::ID = 0;
