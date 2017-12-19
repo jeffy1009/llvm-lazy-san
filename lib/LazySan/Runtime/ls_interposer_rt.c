@@ -5,6 +5,8 @@
 #include <string.h>
 #include "red_black_tree.h"
 
+#define REFCNT_INIT 0
+
 long int alloc_max = 0, alloc_cur = 0;
 long int quarantine_size = 0, quarantine_max = 0, quarantine_max_mb = 0;
 
@@ -38,7 +40,8 @@ typedef struct rb_key_t {
 typedef struct rb_info_t {
   long int size;
   int refcnt;
-  int freed;
+  short freed;
+  short first_inc;
   long int ptrlog[0];
 } rb_info;
 
@@ -58,8 +61,9 @@ rb_info *rb_new_info(long int size) {
 
   i = malloc_func(sizeof(rb_info) + ptrlog_size);
   i->size = size;
-  i->refcnt = 0;
+  i->refcnt = REFCNT_INIT;
   i->freed = 0;
+  i->first_inc = 0;
   memset(i->ptrlog, 0, ptrlog_size);
   return i;
 }
@@ -115,6 +119,10 @@ void ls_inc_refcnt(char *p, char *dest) {
   node = RBExactQuery(rb_root, &tmp_rb_key);
   if (node) {
     rb_info *info = node->info;
+    if (!info->first_inc)
+      info->first_inc = 1;
+    else if (info->freed && info->refcnt == REFCNT_INIT)
+      printf("[interposer] refcnt became alive again??\n");
     ++info->refcnt;
   }
 
@@ -142,7 +150,7 @@ void ls_dec_refcnt(char *p, char *dummy) {
   if (node) { /* is heap node */
     rb_key *key = node->key;
     rb_info *info = node->info;
-    if (info->refcnt<=0)
+    if (info->refcnt<=REFCNT_INIT)
       printf("[interposer] refcnt <= 0???\n");
     --info->refcnt;
     if (info->refcnt<=0) {
