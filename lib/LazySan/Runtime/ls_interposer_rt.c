@@ -103,6 +103,32 @@ void __attribute__((constructor)) init_rb_tree() {
                           rb_print_key, rb_print_info);
 }
 
+/************************/
+/**  Simple Set  ********/
+/************************/
+
+rb_red_blk_tree *ignore_set = NULL; /* to suppress the same error for a node */
+char *tmp_ss_key;
+
+void ss_destroy(void* a) { free_func(a); }
+
+int ss_compare(const void *a, const void *b) {
+  if (*(void**)a > *(void**)b) return(1);
+  if (*(void**)a < *(void**)b) return(-1);
+  return(0);
+}
+
+void ss_print_key(const void* a) {}
+
+void ss_print_info(void* a) {}
+
+void ss_destroy_info(void *a) {}
+
+void __attribute__((constructor)) init_simple_set() {
+  ignore_set = RBTreeCreate(ss_compare, ss_destroy, ss_destroy_info,
+                            ss_print_key, ss_print_info);
+}
+
 /*****************************/
 /**  Refcnt modification  ****/
 /*****************************/
@@ -150,14 +176,25 @@ void ls_dec_refcnt(char *p, char *dummy) {
   if (node) { /* is heap node */
     rb_key *key = node->key;
     rb_info *info = node->info;
-    if (info->refcnt<=REFCNT_INIT)
-      printf("[interposer] refcnt <= 0???\n");
+    rb_red_blk_node *t = NULL;
+    if (info->refcnt<=REFCNT_INIT) {
+      tmp_ss_key = (char*)node;
+      t = RBExactQuery(ignore_set, &tmp_ss_key);
+      if (!t) {
+        char **k = malloc(sizeof(char*));
+        *k = (char*)node;
+        RBTreeInsert(ignore_set, k, 0);
+        printf("[interposer] refcnt <= 0???\n");
+      }
+    }
     --info->refcnt;
     if (info->refcnt<=0) {
       if (info->freed) { /* marked to be freed */
         quarantine_size -= info->size;
         free_func(key->base);
         RBDelete(rb_root, node);
+        if (t)
+          RBDelete(ignore_set, t);
       }
       /* if n is not yet freed, the pointer is probably in some
          register. */
@@ -273,8 +310,13 @@ void *realloc(void *ptr, size_t size) {
     printf("[interposer] double free??????\n");
 
   if (orig_info->refcnt <= 0) {
+    rb_red_blk_node *t;
+    tmp_ss_key = (char*)orig_node;
+    t = RBExactQuery(ignore_set, &tmp_ss_key);
     free_func(p);
     RBDelete(rb_root, orig_node);
+    if (t)
+      RBDelete(ignore_set, t);
   } else {
     orig_info->freed = 1;
     quarantine_size += orig_size;
@@ -321,8 +363,13 @@ void free(void *ptr) {
   }
 
   if (info->refcnt <= 0) {
+    rb_red_blk_node *t;
+    tmp_ss_key = (char*)node;
+    t = RBExactQuery(ignore_set, &tmp_ss_key);
     free_func(ptr);
     RBDelete(rb_root, node);
+    if (t)
+      RBDelete(ignore_set, t);
   } else {
     info->freed = 1;
     quarantine_size += info->size;
