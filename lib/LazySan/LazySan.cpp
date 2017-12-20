@@ -43,7 +43,9 @@ namespace {
 
     void visitStoreInst(StoreInst &I);
     void visitIntrinsicInst(IntrinsicInst &I);
-    void visitMemIntrinsic(MemIntrinsic &I);
+
+    void visitCallInst(CallInst &I);
+    void visitInvokeInst(InvokeInst &I);
   };
 } // end anonymous namespace
 
@@ -241,10 +243,19 @@ void LazySanVisitor::visitIntrinsicInst(IntrinsicInst &I) {
   }
 }
 
-void LazySanVisitor::visitMemIntrinsic(MemIntrinsic &I) {
+void LazySanVisitor::visitCallInst(CallInst &I) {
   // const DataLayout &DL = I.getModule()->getDataLayout();
+  if (!I.getCalledFunction()) // skip indirect calls
+    return;
+
+  if (!isa<MemIntrinsic>(&I)
+      && !I.getCalledFunction()->getName().equals("memset")
+      && !I.getCalledFunction()->getName().equals("memmove")
+      && !I.getCalledFunction()->getName().equals("memcpy"))
+    return;
+
   IRBuilder<> Builder(&I);
-  Value *Dest = I.getDest();
+  Value *Dest = I.getArgOperand(0)->stripPointerCasts();
   if (!checkTy(Dest->getType()))
     return;
 
@@ -276,12 +287,20 @@ void LazySanVisitor::visitMemIntrinsic(MemIntrinsic &I) {
   }
 
  out:
-  if (MemSetInst *MSI = dyn_cast<MemSetInst>(&I)) {
-    Value *V = MSI->getValue();
-    assert(isa<ConstantInt>(V) && cast<Constant>(V)->isNullValue());
-  }
+  bool ShouldInc = true;
+  if (isa<MemSetInst>(&I)
+      || I.getCalledFunction()->getName().equals("memset"))
+    ShouldInc = false;
 
-  handleTy(&I, I.getNextNode(), Dest, isa<MemSetInst>(&I) ? false : true);
+  handleTy(&I, I.getNextNode(), Dest, ShouldInc);
+}
+
+void LazySanVisitor::visitInvokeInst(InvokeInst &I) {
+  assert(!isa<MemIntrinsic>(&I)
+         && !I.getCalledFunction()->getName().equals("memset")
+         && !I.getCalledFunction()->getName().equals("memmove")
+         && !I.getCalledFunction()->getName().equals("memcpy")
+         && "memset, memcpy, memmove with InvokeInst??");
 }
 
 char LazySan::ID = 0;
