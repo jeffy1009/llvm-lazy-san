@@ -3,6 +3,7 @@
 #include <dlfcn.h>
 #include <stdlib.h>
 #include <string.h>
+#include <assert.h>
 #include "red_black_tree.h"
 
 #define REFCNT_INIT 0
@@ -168,12 +169,11 @@ void ls_dec_refcnt(char *p, char *dummy) {
 /**  Interposer  ****/
 /********************/
 
-static void alloc_common(char *base, char *end) {
+static rb_red_blk_node *alloc_common(char *base, long int size) {
   rb_key *new_key;
   rb_info *new_info;
 
-  alloc_cur++;
-  if (alloc_cur > alloc_max)
+  if (++alloc_cur > alloc_max)
     alloc_max = alloc_cur;
 
   if (quarantine_size > quarantine_max) {
@@ -186,40 +186,54 @@ static void alloc_common(char *base, char *end) {
     }
   }
 
-  new_key = rb_new_key(base, end);
-  new_info = rb_new_info(end-base);
-  RBTreeInsert(rb_root, new_key, new_info);
+  memset(base, 0, size);
+
+  new_key = rb_new_key(base, base + size);
+  new_info = rb_new_info(size);
+  return RBTreeInsert(rb_root, new_key, new_info);
+}
+
+static void free_common(char *base, rb_red_blk_node *node) {
+  rb_info *info;
+
+  --alloc_cur;
+
+  info = node->info;
+  if (info->flags & RB_INFO_FREED)
+    printf("[interposer] double free??????\n");
+
+  if (info->refcnt <= 0) {
+    free_func(base);
+    RBDelete(rb_root, node);
+  } else {
+    info->flags |= RB_INFO_FREED;
+    quarantine_size += info->size;
+  }
 }
 
 void *malloc(size_t size) {
-  char *ret;
-
-  ret = malloc_func(size);
+  char *ret = malloc_func(size);
   if (!ret)
     printf("[interposer] malloc failed ??????\n");
-  alloc_common(ret, ret+size);
-  memset(ret, 0, size);
+  alloc_common(ret, size);
   return(ret);
 }
 
 void *calloc(size_t num, size_t size) {
-  char *ret;
-
-  ret = calloc_func(num, size);
+  char *ret = calloc_func(num, size);
   if (!ret)
     printf("[interposer] calloc failed ??????\n");
-  alloc_common(ret, ret+num*size);
-  memset(ret, 0, num*size);
+  alloc_common(ret, num*size);
   return(ret);
 }
 
 void *realloc(void *ptr, size_t size) {
   char *p = (char*)ptr;
-  rb_red_blk_node *orig_node;
-  rb_key *orig_key, *new_key;
+  rb_red_blk_node *orig_node, *new_node;
+  rb_key *orig_key;
   rb_info *orig_info, *new_info;
   char *ret;
-  long int orig_size, ptrlog_size;
+  long int ptrlog_size;
 
   if (p==NULL)
     return malloc(size);
@@ -233,64 +247,31 @@ void *realloc(void *ptr, size_t size) {
   if ((p+size) <= orig_key->end)
     return p;
 
-  /* { */
-  /*   static void* (*realloc_func)(void *ptr, size_t size) = NULL; */
-  /*   if(!realloc_func) */
-  /*     realloc_func = (void *(*)(void *, size_t)) dlsym(RTLD_NEXT, "realloc"); */
-  /*   ret = realloc_func(ptr, size); */
-  /*   return(ret); */
-  /* } */
-
   /* just malloc */
   ret = malloc_func(size);
   if (!ret)
     printf("[interposer] malloc failed ??????\n");
 
-  if (quarantine_size > quarantine_max) {
-    long int quarantine_mb_tmp;
-    quarantine_max = quarantine_size;
-    quarantine_mb_tmp = quarantine_max/1024/1024;
-    if (quarantine_mb_tmp > quarantine_max_mb) {
-      quarantine_max_mb = quarantine_mb_tmp;
-      printf("[interposer] quarantine_max = %ld MB\n", quarantine_max_mb);
-    }
-  }
+  new_node = alloc_common(ret, size);
 
   orig_info = orig_node->info;
-  new_key = rb_new_key(ret, ret+size);
-  new_info = rb_new_info(size);
-  RBTreeInsert(rb_root, new_key, new_info);
-
-  memset(ret, 0, size);
   memcpy(ret, p, orig_info->size);
 
-  orig_size = orig_info->size;
-  ptrlog_size = ((orig_size + 8*64 - 1)/(8*64))*8;
+  new_info = new_node->info;
+  ptrlog_size = ((orig_info->size + 8*64 - 1)/(8*64))*8;
   memcpy(new_info->ptrlog, orig_info->ptrlog, ptrlog_size);
 
-  if (orig_info->flags & RB_INFO_FREED)
-    printf("[interposer] double free??????\n");
-
-  if (orig_info->refcnt <= 0) {
-    free_func(p);
-    RBDelete(rb_root, orig_node);
-  } else {
-    orig_info->flags |= RB_INFO_FREED;
-    quarantine_size += orig_size;
-  }
+  free_common(p, orig_node);
 
   return(ret);
 }
 
 void free(void *ptr) {
+  rb_red_blk_node *node;
   long int size;
   long int *p, *p_end;
   long int nword = 0;
-  rb_red_blk_node *node;
-  rb_key *key;
   rb_info *info;
-
-  alloc_cur--;
 
   tmp_rb_key.base = tmp_rb_key.end = ptr;
   node = RBExactQuery(rb_root, &tmp_rb_key);
@@ -304,26 +285,16 @@ void free(void *ptr) {
     return;
   }
 
-  key = node->key;
   info = node->info;
-  if (info->flags & RB_INFO_FREED)
-    printf("[interposer] double free??????\n");
-
   size = info->size;
   p_end = info->ptrlog + (size+8*64-1)/8/64;
   for (p = info->ptrlog; p < p_end; p++, nword++) {
     while (*p) {
       long int field_offset = 64*nword + __builtin_ctz(*p);
-      ls_dec_refcnt((char*)*((long int*)key->base + field_offset), 0);
+      ls_dec_refcnt((char*)*((long int*)ptr + field_offset), 0);
       *p = *p & (*p - 1); /* unset rightmost bit */
     }
   }
 
-  if (info->refcnt <= 0) {
-    free_func(ptr);
-    RBDelete(rb_root, node);
-  } else {
-    info->flags |= RB_INFO_FREED;
-    quarantine_size += info->size;
-  }
+  free_common(ptr, node);
 }
