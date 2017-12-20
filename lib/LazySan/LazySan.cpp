@@ -15,7 +15,6 @@ using namespace llvm;
 
 namespace {
   class LazySanVisitor : public InstVisitor<LazySanVisitor> {
-    SmallVector<AllocaInst *, 8> AllocaInsts;
     Function *DecRC;
     Function *IncRC;
 
@@ -42,10 +41,8 @@ namespace {
     void handleTy(Instruction *InsertPos, Instruction *InsertPos2,
                   Value *V, bool ShouldInc);
 
-    void visitAllocaInst(AllocaInst &I);
     void visitStoreInst(StoreInst &I);
-    void visitReturnInst(ReturnInst &I);
-
+    void visitIntrinsicInst(IntrinsicInst &I);
     void visitMemIntrinsic(MemIntrinsic &I);
   };
 } // end anonymous namespace
@@ -201,17 +198,6 @@ void LazySanVisitor::handleTy(Instruction *InsertPos, Instruction *InsertPos2,
   assert(Ty->isIntegerTy() || Ty->isFloatingPointTy());
 }
 
-void LazySanVisitor::visitAllocaInst(AllocaInst &I) {
-  const DataLayout &DL = I.getModule()->getDataLayout();
-  IRBuilder<> Builder(I.getNextNode());
-  Type *Ty = I.getAllocatedType();
-  assert(Ty->isSized());
-  // TODO: not always initialize
-  Builder.CreateMemSet(&I, Constant::getNullValue(Builder.getInt8Ty()),
-                       DL.getTypeStoreSize(Ty), 0);
-  AllocaInsts.push_back(&I);
-}
-
 void LazySanVisitor::visitStoreInst(StoreInst &I) {
   Value *Ptr = I.getValueOperand();
   Type *Ty = Ptr->getType();
@@ -239,11 +225,20 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
   Builder.CreateCall(DecRC, {Cast, Cast2});
 }
 
-void LazySanVisitor::visitReturnInst(ReturnInst &I) {
-  IRBuilder<> Builder(&I);
-
-  for (AllocaInst *AI : AllocaInsts)
-    handleTy(&I, nullptr, AI, false);
+void LazySanVisitor::visitIntrinsicInst(IntrinsicInst &I) {
+  switch (I.getIntrinsicID()) {
+  case Intrinsic::lifetime_start: {
+    IRBuilder<> Builder(&I);
+    // TODO: not always initialize
+    Builder.CreateMemSet(I.getArgOperand(1)->stripPointerCasts(),
+                         Constant::getNullValue(Builder.getInt8Ty()),
+                         I.getArgOperand(0), 0);
+    break;
+  }
+  case Intrinsic::lifetime_end:
+    handleTy(&I, nullptr, I.getArgOperand(1)->stripPointerCasts(), false);
+  default:;
+  }
 }
 
 void LazySanVisitor::visitMemIntrinsic(MemIntrinsic &I) {
