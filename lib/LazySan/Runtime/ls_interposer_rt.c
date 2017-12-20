@@ -33,6 +33,8 @@ void __attribute__((constructor)) init_interposer() {
 /**  Red-Black Tree  ****/
 /************************/
 
+#define RB_INFO_FREED 	0x1
+
 typedef struct rb_key_t {
   char *base, *end;
 } rb_key;
@@ -40,7 +42,7 @@ typedef struct rb_key_t {
 typedef struct rb_info_t {
   long int size;
   int refcnt;
-  short freed;
+  int flags;
   long int ptrlog[0];
 } rb_info;
 
@@ -61,7 +63,7 @@ rb_info *rb_new_info(long int size) {
   i = malloc_func(sizeof(rb_info) + ptrlog_size);
   i->size = size;
   i->refcnt = REFCNT_INIT;
-  i->freed = 0;
+  i->flags = 0;
   memset(i->ptrlog, 0, ptrlog_size);
   return i;
 }
@@ -91,7 +93,8 @@ void rb_print_key(const void* a) {
 void rb_print_info(void* a) {
   rb_info *info = (rb_info*)a;
   printf("(0x%lx, %ld)#%d%s\n",
-         info->size, info->size, info->refcnt, info->freed ? "F" : "");
+         info->size, info->size, info->refcnt,
+         (info->flags & RB_INFO_FREED) ? "F" : "");
 }
 
 void rb_destroy_info(void *a) { free_func(a); }
@@ -117,7 +120,7 @@ void ls_inc_refcnt(char *p, char *dest) {
   node = RBExactQuery(rb_root, &tmp_rb_key);
   if (node) {
     rb_info *info = node->info;
-    if (info->freed && info->refcnt == REFCNT_INIT)
+    if ((info->flags & RB_INFO_FREED) && info->refcnt == REFCNT_INIT)
       printf("[interposer] refcnt became alive again??\n");
     ++info->refcnt;
   }
@@ -150,7 +153,7 @@ void ls_dec_refcnt(char *p, char *dummy) {
       printf("[interposer] refcnt <= 0???\n");
     --info->refcnt;
     if (info->refcnt<=0) {
-      if (info->freed) { /* marked to be freed */
+      if (info->flags & RB_INFO_FREED) { /* marked to be freed */
         quarantine_size -= info->size;
         free_func(key->base);
         RBDelete(rb_root, node);
@@ -265,14 +268,14 @@ void *realloc(void *ptr, size_t size) {
   ptrlog_size = ((orig_size + 8*64 - 1)/(8*64))*8;
   memcpy(new_info->ptrlog, orig_info->ptrlog, ptrlog_size);
 
-  if (orig_info->freed)
+  if (orig_info->flags & RB_INFO_FREED)
     printf("[interposer] double free??????\n");
 
   if (orig_info->refcnt <= 0) {
     free_func(p);
     RBDelete(rb_root, orig_node);
   } else {
-    orig_info->freed = 1;
+    orig_info->flags |= RB_INFO_FREED;
     quarantine_size += orig_size;
   }
 
@@ -303,7 +306,7 @@ void free(void *ptr) {
 
   key = node->key;
   info = node->info;
-  if (info->freed)
+  if (info->flags & RB_INFO_FREED)
     printf("[interposer] double free??????\n");
 
   size = info->size;
@@ -320,7 +323,7 @@ void free(void *ptr) {
     free_func(ptr);
     RBDelete(rb_root, node);
   } else {
-    info->freed = 1;
+    info->flags |= RB_INFO_FREED;
     quarantine_size += info->size;
   }
 }
