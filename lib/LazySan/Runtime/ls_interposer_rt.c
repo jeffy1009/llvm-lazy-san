@@ -41,7 +41,6 @@ typedef struct rb_info_t {
   long int size;
   int refcnt;
   short freed;
-  short first_inc;
   long int ptrlog[0];
 } rb_info;
 
@@ -63,7 +62,6 @@ rb_info *rb_new_info(long int size) {
   i->size = size;
   i->refcnt = REFCNT_INIT;
   i->freed = 0;
-  i->first_inc = 0;
   memset(i->ptrlog, 0, ptrlog_size);
   return i;
 }
@@ -119,9 +117,7 @@ void ls_inc_refcnt(char *p, char *dest) {
   node = RBExactQuery(rb_root, &tmp_rb_key);
   if (node) {
     rb_info *info = node->info;
-    if (!info->first_inc)
-      info->first_inc = 1;
-    else if (info->freed && info->refcnt == REFCNT_INIT)
+    if (info->freed && info->refcnt == REFCNT_INIT)
       printf("[interposer] refcnt became alive again??\n");
     ++info->refcnt;
   }
