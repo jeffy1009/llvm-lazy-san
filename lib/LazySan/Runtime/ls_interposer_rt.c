@@ -290,7 +290,7 @@ void free(void *ptr) {
   p_end = info->ptrlog + (size+8*64-1)/8/64;
   for (p = info->ptrlog; p < p_end; p++, nword++) {
     while (*p) {
-      long int field_offset = 64*nword + __builtin_ctz(*p);
+      long int field_offset = 64*nword + __builtin_ctzl(*p);
       ls_dec_refcnt((char*)*((long int*)ptr + field_offset), 0);
       *p = *p & (*p - 1); /* unset rightmost bit */
     }
