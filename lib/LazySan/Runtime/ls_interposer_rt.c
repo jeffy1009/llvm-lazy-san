@@ -37,7 +37,8 @@ void __attribute__((constructor)) init_interposer() {
 /**  Red-Black Tree  ****/
 /************************/
 
-#define RB_INFO_FREED 	0x1
+#define RB_INFO_FREED 		0x1
+#define RB_INFO_RCBELOWZERO 	0x10000
 
 typedef struct rb_key_t {
   char *base, *end;
@@ -153,8 +154,10 @@ void ls_dec_refcnt(char *p, char *dummy) {
   if (node) { /* is heap node */
     rb_key *key = node->key;
     rb_info *info = node->info;
-    if (info->refcnt<=REFCNT_INIT)
+    if (info->refcnt<=REFCNT_INIT && !(info->flags & RB_INFO_RCBELOWZERO)) {
+      info->flags |= RB_INFO_RCBELOWZERO;
       printf("[interposer] refcnt <= 0???\n");
+    }
     --info->refcnt;
     if (info->refcnt<=0) {
       if (info->flags & RB_INFO_FREED) { /* marked to be freed */
