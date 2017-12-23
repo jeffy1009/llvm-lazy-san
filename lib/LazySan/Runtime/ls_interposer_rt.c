@@ -8,22 +8,25 @@
 
 #define REFCNT_INIT 0
 
-long int alloc_max = 0, alloc_cur = 0;
+long int alloc_max = 0, alloc_cur = 0, alloc_tot = 0;
 long int quarantine_size = 0, quarantine_max = 0, quarantine_max_mb = 0;
 
 void* (*malloc_func)(size_t size) = NULL;
 void* (*calloc_func)(size_t num, size_t size) = NULL;
+void* (*realloc_func)(void *ptr, size_t size) = NULL;
 void (*free_func)(void *ptr) = NULL;
 
 void atexit_hook() {
   printf("PROGRAM TERMINATED!\n");
-  printf("max alloc: %ld, cur alloc: %ld\n", alloc_max, alloc_cur);
+  printf("max alloc: %ld, cur alloc: %ld, tot alloc: %ld\n",
+         alloc_max, alloc_cur, alloc_tot);
   printf("quarantine max: %ld B, cur: %ld B\n", quarantine_max, quarantine_size);
 }
 
 void __attribute__((constructor)) init_interposer() {
   malloc_func = (void *(*)(size_t)) dlsym(RTLD_NEXT, "malloc");
   calloc_func = (void *(*)(size_t, size_t)) dlsym(RTLD_NEXT, "calloc");
+  realloc_func = (void *(*)(void *, size_t)) dlsym(RTLD_NEXT, "realloc");
   free_func = (void (*)(void*)) dlsym(RTLD_NEXT, "free");
 
   if (atexit(atexit_hook))
@@ -176,6 +179,7 @@ static rb_red_blk_node *alloc_common(char *base, long int size) {
   if (++alloc_cur > alloc_max)
     alloc_max = alloc_cur;
 
+  ++alloc_tot;
   if (quarantine_size > quarantine_max) {
     long int quarantine_mb_tmp;
     quarantine_max = quarantine_size;
