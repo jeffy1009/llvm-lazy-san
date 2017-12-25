@@ -8,9 +8,9 @@
 
 #define REFCNT_INIT 0
 
-long int alloc_max = 0, alloc_cur = 0, alloc_tot = 0;
-long int num_ptrs = 0;
-long int quarantine_size = 0, quarantine_max = 0, quarantine_max_mb = 0;
+long alloc_max = 0, alloc_cur = 0, alloc_tot = 0;
+long num_ptrs = 0;
+long quarantine_size = 0, quarantine_max = 0, quarantine_max_mb = 0;
 
 void* (*malloc_func)(size_t size) = NULL;
 void* (*calloc_func)(size_t num, size_t size) = NULL;
@@ -47,10 +47,10 @@ typedef struct rb_key_t {
 } rb_key;
 
 typedef struct rb_info_t {
-  long int size;
+  long size;
   int refcnt;
   int flags;
-  long int ptrlog[0];
+  long ptrlog[0];
 } rb_info;
 
 rb_red_blk_tree *rb_root = NULL;
@@ -63,9 +63,9 @@ rb_key *rb_new_key(char *base, char *end) {
   return k;
 }
 
-rb_info *rb_new_info(long int size) {
+rb_info *rb_new_info(long size) {
   rb_info *i;
-  long int ptrlog_size = ((size + 8*64 - 1)/(8*64))*8;
+  long ptrlog_size = ((size + 8*64 - 1)/(8*64))*8;
 
   i = malloc_func(sizeof(rb_info) + ptrlog_size);
   i->size = size;
@@ -94,7 +94,7 @@ int rb_compare(const void *a, const void *b) {
 
 void rb_print_key(const void* a) {
   rb_key *key = (rb_key*)a;
-  printf("[0x%lx, 0x%lx]", (long int)key->base, (long int)key->end);
+  printf("[0x%lx, 0x%lx]", (long)key->base, (long)key->end);
 }
 
 void rb_print_info(void* a) {
@@ -177,7 +177,7 @@ void ls_dec_refcnt(char *p, char *dummy) {
 /**  Interposer  ****/
 /********************/
 
-static rb_red_blk_node *alloc_common(char *base, long int size) {
+static rb_red_blk_node *alloc_common(char *base, long size) {
   rb_key *new_key;
   rb_info *new_info;
 
@@ -186,7 +186,7 @@ static rb_red_blk_node *alloc_common(char *base, long int size) {
 
   ++alloc_tot;
   if (quarantine_size > quarantine_max) {
-    long int quarantine_mb_tmp;
+    long quarantine_mb_tmp;
     quarantine_max = quarantine_size;
     quarantine_mb_tmp = quarantine_max/1024/1024;
     if (quarantine_mb_tmp > quarantine_max_mb) {
@@ -242,7 +242,7 @@ void *realloc(void *ptr, size_t size) {
   rb_key *orig_key;
   rb_info *orig_info, *new_info;
   char *ret;
-  long int ptrlog_size;
+  long ptrlog_size;
 
   if (p==NULL)
     return malloc(size);
@@ -277,9 +277,9 @@ void *realloc(void *ptr, size_t size) {
 
 void free(void *ptr) {
   rb_red_blk_node *node;
-  long int size;
-  long int *p, *p_end;
-  long int nword = 0;
+  long size;
+  long *p, *p_end;
+  long nword = 0;
   rb_info *info;
 
   if (ptr==NULL)
@@ -302,8 +302,8 @@ void free(void *ptr) {
   p_end = info->ptrlog + (size+8*64-1)/8/64;
   for (p = info->ptrlog; p < p_end; p++, nword++) {
     while (*p) {
-      long int field_offset = 64*nword + __builtin_ctzl(*p);
-      ls_dec_refcnt((char*)*((long int*)ptr + field_offset), 0);
+      long field_offset = 64*nword + __builtin_ctzl(*p);
+      ls_dec_refcnt((char*)*((long*)ptr + field_offset), 0);
       *p = *p & (*p - 1); /* unset rightmost bit */
     }
   }
