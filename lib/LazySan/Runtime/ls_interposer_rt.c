@@ -9,6 +9,7 @@
 #define REFCNT_INIT 0
 
 long int alloc_max = 0, alloc_cur = 0, alloc_tot = 0;
+long int num_ptrs = 0;
 long int quarantine_size = 0, quarantine_max = 0, quarantine_max_mb = 0;
 
 void* (*malloc_func)(size_t size) = NULL;
@@ -20,6 +21,7 @@ void atexit_hook() {
   printf("PROGRAM TERMINATED!\n");
   printf("max alloc: %ld, cur alloc: %ld, tot alloc: %ld\n",
          alloc_max, alloc_cur, alloc_tot);
+  printf("num ptrs: %ld\n", num_ptrs);
   printf("quarantine max: %ld B, cur: %ld B\n", quarantine_max, quarantine_size);
 }
 
@@ -120,7 +122,7 @@ void ls_inc_refcnt(char *p, char *dest) {
 
   if (!p)
     return;
-
+  num_ptrs++;
   tmp_rb_key.base = tmp_rb_key.end = p;
   node = RBExactQuery(rb_root, &tmp_rb_key);
   if (node) {
