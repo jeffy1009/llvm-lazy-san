@@ -282,6 +282,9 @@ void free(void *ptr) {
   long int nword = 0;
   rb_info *info;
 
+  if (ptr==NULL)
+    return;
+
   tmp_rb_key.base = tmp_rb_key.end = ptr;
   node = RBExactQuery(rb_root, &tmp_rb_key);
   if (!node) {
