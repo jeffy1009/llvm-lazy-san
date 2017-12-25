@@ -251,7 +251,8 @@ void LazySanVisitor::visitCallInst(CallInst &I) {
   if (!isa<MemIntrinsic>(&I)
       && !I.getCalledFunction()->getName().equals("memset")
       && !I.getCalledFunction()->getName().equals("memmove")
-      && !I.getCalledFunction()->getName().equals("memcpy"))
+      && !I.getCalledFunction()->getName().equals("memcpy")
+      && !I.getCalledFunction()->getName().equals("free"))
     return;
 
   IRBuilder<> Builder(&I);
@@ -289,7 +290,8 @@ void LazySanVisitor::visitCallInst(CallInst &I) {
  out:
   bool ShouldInc = true;
   if (isa<MemSetInst>(&I)
-      || I.getCalledFunction()->getName().equals("memset"))
+      || I.getCalledFunction()->getName().equals("memset")
+      || I.getCalledFunction()->getName().equals("free"))
     ShouldInc = false;
 
   handleTy(&I, I.getNextNode(), Dest, ShouldInc);
