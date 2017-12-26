@@ -15,13 +15,17 @@ using namespace llvm;
 
 namespace {
   class LazySanVisitor : public InstVisitor<LazySanVisitor> {
-    Function *DecRC;
-    Function *IncRC;
+    Function *DecRC, *IncRC;
+    Function *ClearPtrLog, *CpyPtrLog, *IncPtrLog, *DecPtrLog;
 
   public:
     LazySanVisitor(Module &M) {
       DecRC = M.getFunction("ls_dec_refcnt");
       IncRC = M.getFunction("ls_inc_refcnt");
+      ClearPtrLog = M.getFunction("ls_clear_ptrlog");
+      CpyPtrLog = M.getFunction("ls_copy_ptrlog");
+      IncPtrLog = M.getFunction("ls_inc_ptrlog");
+      DecPtrLog = M.getFunction("ls_dec_ptrlog");
     }
 
     // check*** - Only check for existance of pointer types
@@ -228,17 +232,28 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
 }
 
 void LazySanVisitor::visitIntrinsicInst(IntrinsicInst &I) {
+  IRBuilder<> Builder(&I);
   switch (I.getIntrinsicID()) {
   case Intrinsic::lifetime_start: {
-    IRBuilder<> Builder(&I);
+    Value *Dest = I.getArgOperand(1)->stripPointerCasts();
+    Value *Cast = Builder.CreateBitCast(Dest,
+                                        Type::getInt8PtrTy(I.getContext()));
+    Value *Size = I.getArgOperand(0);
     // TODO: not always initialize
-    Builder.CreateMemSet(I.getArgOperand(1)->stripPointerCasts(),
-                         Constant::getNullValue(Builder.getInt8Ty()),
-                         I.getArgOperand(0), 0);
+    Builder.CreateMemSet(Dest, Constant::getNullValue(Builder.getInt8Ty()),
+                         Size, 0);
+    Builder.CreateCall(ClearPtrLog, {Cast, Size});
     break;
   }
-  case Intrinsic::lifetime_end:
-    handleTy(&I, nullptr, I.getArgOperand(1)->stripPointerCasts(), false);
+  case Intrinsic::lifetime_end: {
+    Value *Dest = I.getArgOperand(1)->stripPointerCasts();
+    Value *Cast = Builder.CreateBitCast(Dest,
+                                        Type::getInt8PtrTy(I.getContext()));
+    Value *Size = I.getArgOperand(0);
+    // handleTy(&I, nullptr, Dest, false);
+    Builder.CreateCall(DecPtrLog, {Cast, Size});
+    break;
+  }
   default:;
   }
 }
@@ -294,7 +309,20 @@ void LazySanVisitor::visitCallInst(CallInst &I) {
       || I.getCalledFunction()->getName().equals("free"))
     ShouldInc = false;
 
-  handleTy(&I, I.getNextNode(), Dest, ShouldInc);
+  Value *Cast = Builder.CreateBitCast(Dest,
+                                      Type::getInt8PtrTy(I.getContext()));
+
+  Value *Size = I.getArgOperand(2);
+  if (ShouldInc) {
+    Value *Cast2 = Builder.CreateBitCast(I.getArgOperand(1)->stripPointerCasts(),
+                                         Type::getInt8PtrTy(I.getContext()));
+    Builder.CreateCall(IncPtrLog, {Cast2, Size});
+    Builder.CreateCall(DecPtrLog, {Cast, Size});
+    Builder.CreateCall(CpyPtrLog, {Cast, Cast2, Size});
+  } else {
+    Builder.CreateCall(DecPtrLog, {Cast, Size});
+  }
+  // handleTy(&I, I.getNextNode(), Dest, ShouldInc);
 }
 
 void LazySanVisitor::visitInvokeInst(InvokeInst &I) {
@@ -332,6 +360,24 @@ bool LazySan::runOnModule(Module &M) {
                         FunctionType::get(Type::getVoidTy(C),
                                           {Type::getInt8PtrTy(C),
                                               Type::getInt8PtrTy(C)}, false));
+  M.getOrInsertFunction("ls_clear_ptrlog",
+                        FunctionType::get(Type::getVoidTy(C),
+                                          {Type::getInt8PtrTy(C),
+                                              Type::getInt64Ty(C)}, false));
+  M.getOrInsertFunction("ls_copy_ptrlog",
+                        FunctionType::get(Type::getVoidTy(C),
+                                          {Type::getInt8PtrTy(C),
+                                              Type::getInt8PtrTy(C),
+                                              Type::getInt64Ty(C)}, false));
+  M.getOrInsertFunction("ls_inc_ptrlog",
+                        FunctionType::get(Type::getVoidTy(C),
+                                          {Type::getInt8PtrTy(C),
+                                              Type::getInt64Ty(C)}, false));
+  M.getOrInsertFunction("ls_dec_ptrlog",
+                        FunctionType::get(Type::getVoidTy(C),
+                                          {Type::getInt8PtrTy(C),
+                                              Type::getInt64Ty(C)}, false));
+
   dbgs() << "Hello World!!!\n";
   for (Function &F : M.functions()) {
     if (F.empty())
