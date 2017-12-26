@@ -8,9 +8,8 @@
 #include <errno.h>
 #include "red_black_tree.h"
 
-#define REFCNT_INIT 0
-
 long *global_ptrlog;
+extern rb_red_blk_tree *rb_root;
 
 long alloc_max = 0, alloc_cur = 0, alloc_tot = 0;
 long num_ptrs = 0;
@@ -50,79 +49,6 @@ void __attribute__((constructor)) init_interposer() {
   printf("[interposer] global_ptrlog mmap'ed @ 0x%lx\n", (long)global_ptrlog);
 }
 
-/************************/
-/**  Red-Black Tree  ****/
-/************************/
-
-#define RB_INFO_FREED 		0x1
-#define RB_INFO_RCBELOWZERO 	0x10000
-
-typedef struct rb_key_t {
-  char *base, *end;
-} rb_key;
-
-typedef struct rb_info_t {
-  long size;
-  int refcnt;
-  int flags;
-} rb_info;
-
-rb_red_blk_tree *rb_root = NULL;
-rb_key tmp_rb_key; /* temporary key used for queries */
-
-rb_key *rb_new_key(char *base, char *end) {
-  rb_key *k = malloc_func(sizeof(rb_key));
-  k->base = base;
-  k->end = end;
-  return k;
-}
-
-rb_info *rb_new_info(long size) {
-  rb_info *i;
-
-  i = malloc_func(sizeof(rb_info));
-  i->size = size;
-  i->refcnt = REFCNT_INIT;
-  i->flags = 0;
-  return i;
-}
-
-void rb_destroy(void* a) { free_func(a); }
-
-int rb_compare(const void *a, const void *b) {
-  rb_key *akey = (rb_key*)a, *bkey = (rb_key*)b;
-
-  if ((akey->base <= bkey->base)
-      && (bkey->base <= akey->end)) {
-    if ((bkey->base != bkey->end)
-        && !((akey->end < bkey->base) || (bkey->end < akey->base)))
-      printf("[interposer] existing entry with overlaping region!\n");
-    return 0;
-  }
-  if( akey->base > bkey->base) return(1);
-  if( akey->base < bkey->base) return(-1);
-  return(0);
-}
-
-void rb_print_key(const void* a) {
-  rb_key *key = (rb_key*)a;
-  printf("[0x%lx, 0x%lx]", (long)key->base, (long)key->end);
-}
-
-void rb_print_info(void* a) {
-  rb_info *info = (rb_info*)a;
-  printf("(0x%lx, %ld)#%d%s\n",
-         info->size, info->size, info->refcnt,
-         (info->flags & RB_INFO_FREED) ? "F" : "");
-}
-
-void rb_destroy_info(void *a) { free_func(a); }
-
-void __attribute__((constructor)) init_rb_tree() {
-  rb_root = RBTreeCreate(rb_compare, rb_destroy, rb_destroy_info,
-                          rb_print_key, rb_print_info);
-}
-
 /*****************************/
 /**  Refcnt modification  ****/
 /*****************************/
@@ -130,20 +56,18 @@ void __attribute__((constructor)) init_rb_tree() {
 /* p - written pointer value
    dest - store destination */
 void ls_inc_refcnt(char *p, char *dest) {
-  rb_red_blk_node *node;
+  rb_red_blk_node *n;
   long offset, widx, bidx;
 
   if (!p)
     return;
 
   num_ptrs++;
-  tmp_rb_key.base = tmp_rb_key.end = p;
-  node = RBExactQuery(rb_root, &tmp_rb_key);
-  if (node) {
-    rb_info *info = node->info;
-    if ((info->flags & RB_INFO_FREED) && info->refcnt == REFCNT_INIT)
+  n = RBExactQuery(rb_root, p);
+  if (n) {
+    if ((n->flags & RB_INFO_FREED) && n->refcnt == REFCNT_INIT)
       printf("[interposer] refcnt became alive again??\n");
-    ++info->refcnt;
+    ++n->refcnt;
   }
 
   /* mark pointer type field */
@@ -154,26 +78,23 @@ void ls_inc_refcnt(char *p, char *dest) {
 }
 
 void ls_dec_refcnt(char *p, char *dummy) {
-  rb_red_blk_node *node;
+  rb_red_blk_node *n;
 
   if (!p)
     return;
 
-  tmp_rb_key.base = tmp_rb_key.end = p;
-  node = RBExactQuery(rb_root, &tmp_rb_key);
-  if (node) { /* is heap node */
-    rb_key *key = node->key;
-    rb_info *info = node->info;
-    if (info->refcnt<=REFCNT_INIT && !(info->flags & RB_INFO_RCBELOWZERO)) {
-      info->flags |= RB_INFO_RCBELOWZERO;
+  n = RBExactQuery(rb_root, p);
+  if (n) { /* is heap node */
+    if (n->refcnt<=REFCNT_INIT && !(n->flags & RB_INFO_RCBELOWZERO)) {
+      n->flags |= RB_INFO_RCBELOWZERO;
       printf("[interposer] refcnt <= 0???\n");
     }
-    --info->refcnt;
-    if (info->refcnt<=0) {
-      if (info->flags & RB_INFO_FREED) { /* marked to be freed */
-        quarantine_size -= info->size;
-        free_func(key->base);
-        RBDelete(rb_root, node);
+    --n->refcnt;
+    if (n->refcnt<=0) {
+      if (n->flags & RB_INFO_FREED) { /* marked to be freed */
+        quarantine_size -= n->size;
+        free_func(n->base);
+        RBDelete(rb_root, n);
       }
       /* if n is not yet freed, the pointer is probably in some
          register. */
@@ -289,9 +210,6 @@ void ls_dec_ptrlog(char *p, long size) {
 /********************/
 
 static rb_red_blk_node *alloc_common(char *base, long size) {
-  rb_key *new_key;
-  rb_info *new_info;
-
   if (++alloc_cur > alloc_max)
     alloc_max = alloc_cur;
 
@@ -309,26 +227,21 @@ static rb_red_blk_node *alloc_common(char *base, long size) {
   memset(base, 0, size);
   ls_clear_ptrlog(base, size);
 
-  new_key = rb_new_key(base, base + size);
-  new_info = rb_new_info(size);
-  return RBTreeInsert(rb_root, new_key, new_info);
+  return RBTreeInsert(rb_root, base, size);
 }
 
-static void free_common(char *base, rb_red_blk_node *node) {
-  rb_info *info;
-
+static void free_common(char *base, rb_red_blk_node *n) {
   --alloc_cur;
 
-  info = node->info;
-  if (info->flags & RB_INFO_FREED)
+  if (n->flags & RB_INFO_FREED)
     printf("[interposer] double free??????\n");
 
-  if (info->refcnt <= 0) {
+  if (n->refcnt <= 0) {
     free_func(base);
-    RBDelete(rb_root, node);
+    RBDelete(rb_root, n);
   } else {
-    info->flags |= RB_INFO_FREED;
-    quarantine_size += info->size;
+    n->flags |= RB_INFO_FREED;
+    quarantine_size += n->size;
   }
 }
 
@@ -350,21 +263,17 @@ void *calloc(size_t num, size_t size) {
 
 void *realloc(void *ptr, size_t size) {
   char *p = (char*)ptr;
-  rb_red_blk_node *orig_node, *new_node;
-  rb_key *orig_key, *new_key;
-  rb_info *orig_info;
+  rb_red_blk_node *orig_n, *new_n;
   char *ret;
 
   if (p==NULL)
     return malloc(size);
 
-  tmp_rb_key.base = tmp_rb_key.end = p;
-  orig_node = RBExactQuery(rb_root, &tmp_rb_key);
+  orig_n = RBExactQuery(rb_root, p);
 
-  orig_key = orig_node->key;
-  if (orig_key->base != p)
+  if (orig_n->base != p)
     printf("[interposer] ptr != base in realloc ??????\n");
-  if ((p+size) <= orig_key->end)
+  if ((p+size) <= orig_n->end)
     return p;
 
   /* just malloc */
@@ -372,29 +281,25 @@ void *realloc(void *ptr, size_t size) {
   if (!ret)
     printf("[interposer] malloc failed ??????\n");
 
-  new_node = alloc_common(ret, size);
+  new_n = alloc_common(ret, size);
 
-  orig_info = orig_node->info;
-  memcpy(ret, p, orig_info->size);
+  memcpy(ret, p, orig_n->size);
 
-  new_key = new_node->key;
-  ls_copy_ptrlog(new_key->base, orig_key->base, orig_info->size);
+  ls_copy_ptrlog(new_n->base, orig_n->base, orig_n->size);
 
-  free_common(p, orig_node);
+  free_common(p, orig_n);
 
   return(ret);
 }
 
 void free(void *ptr) {
-  rb_red_blk_node *node;
-  rb_info *info;
+  rb_red_blk_node *n;
 
   if (ptr==NULL)
     return;
 
-  tmp_rb_key.base = tmp_rb_key.end = ptr;
-  node = RBExactQuery(rb_root, &tmp_rb_key);
-  if (!node) {
+  n = RBExactQuery(rb_root, ptr);
+  if (!n) {
     /* there are no dangling pointers to this node,
        so the node is already removed from the rangetree */
     /* NOTE: there can be a dangling pointer in the register
@@ -404,7 +309,6 @@ void free(void *ptr) {
     return;
   }
 
-  info = node->info;
-  ls_dec_ptrlog(ptr, info->size);
-  free_common(ptr, node);
+  ls_dec_ptrlog(ptr, n->size);
+  free_common(ptr, n);
 }

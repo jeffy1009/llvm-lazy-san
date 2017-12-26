@@ -1,8 +1,6 @@
 set(SOURCES
   ls_interposer_rt.c
-  misc.c
   red_black_tree.c
-  stack.c
     )
 
 add_llvm_loadable_module(ls_interposer_rt
