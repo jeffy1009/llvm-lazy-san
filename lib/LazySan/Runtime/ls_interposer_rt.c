@@ -4,9 +4,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <sys/mman.h>
+#include <errno.h>
 #include "red_black_tree.h"
 
 #define REFCNT_INIT 0
+
+long *global_ptrlog;
 
 long alloc_max = 0, alloc_cur = 0, alloc_tot = 0;
 long num_ptrs = 0;
@@ -33,6 +37,17 @@ void __attribute__((constructor)) init_interposer() {
 
   if (atexit(atexit_hook))
     printf("atexit failed!\n");
+
+  global_ptrlog = mmap((void*)0x00007fff8000, 0x020000000000 /* 2TB */,
+                       PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE,
+                       -1, 0);
+  if (global_ptrlog == (void*)-1) {
+     /* strangely, perror() segfaults */
+    printf("[interposer] global_ptrlog mmap failed: errno %d\n", errno);
+    exit(0);
+  }
+  printf("[interposer] global_ptrlog mmap'ed @ 0x%lx\n", (long)global_ptrlog);
 }
 
 /************************/
@@ -50,7 +65,6 @@ typedef struct rb_info_t {
   long size;
   int refcnt;
   int flags;
-  long ptrlog[0];
 } rb_info;
 
 rb_red_blk_tree *rb_root = NULL;
@@ -65,13 +79,11 @@ rb_key *rb_new_key(char *base, char *end) {
 
 rb_info *rb_new_info(long size) {
   rb_info *i;
-  long ptrlog_size = ((size + 8*64 - 1)/(8*64))*8;
 
-  i = malloc_func(sizeof(rb_info) + ptrlog_size);
+  i = malloc_func(sizeof(rb_info));
   i->size = size;
   i->refcnt = REFCNT_INIT;
   i->flags = 0;
-  memset(i->ptrlog, 0, ptrlog_size);
   return i;
 }
 
@@ -119,9 +131,11 @@ void __attribute__((constructor)) init_rb_tree() {
    dest - store destination */
 void ls_inc_refcnt(char *p, char *dest) {
   rb_red_blk_node *node;
+  long offset, widx, bidx;
 
   if (!p)
     return;
+
   num_ptrs++;
   tmp_rb_key.base = tmp_rb_key.end = p;
   node = RBExactQuery(rb_root, &tmp_rb_key);
@@ -133,16 +147,10 @@ void ls_inc_refcnt(char *p, char *dest) {
   }
 
   /* mark pointer type field */
-  tmp_rb_key.base = tmp_rb_key.end = dest;
-  node = RBExactQuery(rb_root, &tmp_rb_key);
-  if (node) {
-    rb_key *key = node->key;
-    rb_info *info = node->info;
-    long int field_offset = (dest - key->base)/8;
-    long int word = field_offset/64;
-    int rem = field_offset%64;
-    info->ptrlog[word] |= (1UL << rem);
-  }
+  offset = (long)dest >> 3;
+  widx = offset >> 6; /* word index */
+  bidx = offset & 0x3F; /* bit index */
+  global_ptrlog[widx] |= (1UL << bidx);
 }
 
 void ls_dec_refcnt(char *p, char *dummy) {
@@ -173,6 +181,109 @@ void ls_dec_refcnt(char *p, char *dummy) {
   }
 }
 
+void ls_clear_ptrlog(char *p, long size) {
+  char *end = p + size;
+  long offset = (long)p >> 3, offset_e = (long)end >> 3;
+  long widx = offset >> 6, widx_e = offset_e >> 6;
+  long bidx = offset & 0x3F, bidx_e = offset_e & 0x3F;
+  long *pl = global_ptrlog + widx, *pl_e = global_ptrlog + widx_e;
+  long mask = ((1UL << bidx) - 1), mask_e = (-1L << bidx_e);
+
+  if (widx == widx_e) {
+    mask |= mask_e;
+    *pl &= mask;
+    return;
+  }
+
+  *pl++ &= mask;
+  while (pl < pl_e)
+    *pl++ = 0;
+  *pl &= mask_e;
+}
+
+void ls_copy_ptrlog(char *d, char *s, long size) {
+  char *end = d + size;
+  long offset = (long)d >> 3, offset_e = (long)end >> 3;
+  long s_offset = (long)s >> 3;
+  long widx = offset >> 6, widx_e = offset_e >> 6;
+  long s_widx = s_offset >> 6;
+  long bidx = offset & 0x3F, bidx_e = offset_e & 0x3F;
+  long *pl = global_ptrlog + widx, *pl_e = global_ptrlog + widx_e;
+  long *s_pl = global_ptrlog + s_widx;
+  long mask = ((1UL << bidx) - 1), mask_e = (-1L << bidx_e);
+  long s_pl_val;
+
+  if (widx == widx_e) {
+    mask |= mask_e;
+    s_pl_val = *s_pl & mask; /* should be done before the next
+                                in case d and s overlap */
+    *pl = (*pl & mask) | s_pl_val;
+    return;
+  }
+
+  s_pl_val = *s_pl & mask;
+  *pl = (*pl & mask) | s_pl_val;
+  pl++, s_pl++;
+  while (pl < pl_e)
+    *pl++ = *s_pl++;
+  s_pl_val = *s_pl & mask_e;
+  *pl = (*pl & mask_e) | s_pl_val;
+}
+
+static void inc_or_dec_ptrlog(char *p, long size, void (*f)(char *, char *)) {
+  char *end = p + size;
+  long offset = (long)p >> 3, offset_e = (long)end >> 3;
+  long widx = offset >> 6, widx_e = offset_e >> 6;
+  long bidx = offset & 0x3F, bidx_e = offset_e & 0x3F;
+  long *pl = global_ptrlog + widx, *pl_e = global_ptrlog + widx_e;
+  long mask_e = (-1L << bidx_e);
+  long *pw = (long *)p;
+  long pl_val;
+
+  if (widx == widx_e) {
+    pl_val = (*pl & ~mask_e) >> bidx;
+    while (pl_val) {
+      long tmp = __builtin_ctzl(pl_val);
+      f((char*)*(pw+tmp), 0);
+      pl_val &= (pl_val - 1);
+    }
+    return;
+  }
+
+  pl_val = *pl >> bidx;
+  while (pl_val) {
+    long tmp = __builtin_ctzl(pl_val);
+    f((char*)*(pw+tmp), 0);
+    pl_val &= (pl_val - 1);
+  }
+  pl++, pw+=(64-bidx);
+
+  while (pl < pl_e) {
+    pl_val = *pl;
+    while (pl_val) {
+      long tmp = __builtin_ctzl(pl_val);
+      f((char*)*(pw + tmp), 0);
+      pl_val &= (pl_val - 1);
+    }
+    pl++, pw+=64;
+  }
+
+  pl_val = *pl & ~mask_e;
+  while (pl_val) {
+    long tmp = __builtin_ctzl(pl_val);
+    f((char*)*(pw + tmp), 0);
+    pl_val &= (pl_val - 1);
+  }
+}
+
+void ls_inc_ptrlog(char *p, long size) {
+  inc_or_dec_ptrlog(p, size, ls_inc_refcnt);
+}
+
+void ls_dec_ptrlog(char *p, long size) {
+  inc_or_dec_ptrlog(p, size, ls_dec_refcnt);
+}
+
 /********************/
 /**  Interposer  ****/
 /********************/
@@ -196,6 +307,7 @@ static rb_red_blk_node *alloc_common(char *base, long size) {
   }
 
   memset(base, 0, size);
+  ls_clear_ptrlog(base, size);
 
   new_key = rb_new_key(base, base + size);
   new_info = rb_new_info(size);
@@ -239,10 +351,9 @@ void *calloc(size_t num, size_t size) {
 void *realloc(void *ptr, size_t size) {
   char *p = (char*)ptr;
   rb_red_blk_node *orig_node, *new_node;
-  rb_key *orig_key;
-  rb_info *orig_info, *new_info;
+  rb_key *orig_key, *new_key;
+  rb_info *orig_info;
   char *ret;
-  long ptrlog_size;
 
   if (p==NULL)
     return malloc(size);
@@ -266,9 +377,8 @@ void *realloc(void *ptr, size_t size) {
   orig_info = orig_node->info;
   memcpy(ret, p, orig_info->size);
 
-  new_info = new_node->info;
-  ptrlog_size = ((orig_info->size + 8*64 - 1)/(8*64))*8;
-  memcpy(new_info->ptrlog, orig_info->ptrlog, ptrlog_size);
+  new_key = new_node->key;
+  ls_copy_ptrlog(new_key->base, orig_key->base, orig_info->size);
 
   free_common(p, orig_node);
 
@@ -277,9 +387,6 @@ void *realloc(void *ptr, size_t size) {
 
 void free(void *ptr) {
   rb_red_blk_node *node;
-  long size;
-  long *p, *p_end;
-  long nword = 0;
   rb_info *info;
 
   if (ptr==NULL)
@@ -298,15 +405,6 @@ void free(void *ptr) {
   }
 
   info = node->info;
-  size = info->size;
-  p_end = info->ptrlog + (size+8*64-1)/8/64;
-  for (p = info->ptrlog; p < p_end; p++, nword++) {
-    while (*p) {
-      long field_offset = 64*nword + __builtin_ctzl(*p);
-      ls_dec_refcnt((char*)*((long*)ptr + field_offset), 0);
-      *p = *p & (*p - 1); /* unset rightmost bit */
-    }
-  }
-
+  ls_dec_ptrlog(ptr, info->size);
   free_common(ptr, node);
 }
