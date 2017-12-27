@@ -136,18 +136,18 @@ void ls_copy_ptrlog(char *d, char *s, long size) {
 
   if (widx == widx_e) {
     mask |= mask_e;
-    s_pl_val = *s_pl & mask; /* should be done before the next
+    s_pl_val = *s_pl & ~mask; /* should be done before the next
                                 in case d and s overlap */
     *pl = (*pl & mask) | s_pl_val;
     return;
   }
 
-  s_pl_val = *s_pl & mask;
+  s_pl_val = *s_pl & ~mask;
   *pl = (*pl & mask) | s_pl_val;
   pl++, s_pl++;
   while (pl < pl_e)
     *pl++ = *s_pl++;
-  s_pl_val = *s_pl & mask_e;
+  s_pl_val = *s_pl & ~mask_e;
   *pl = (*pl & mask_e) | s_pl_val;
 }
 
