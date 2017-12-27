@@ -123,32 +123,36 @@ void ls_clear_ptrlog(char *p, long size) {
 }
 
 void ls_copy_ptrlog(char *d, char *s, long size) {
-  char *end = d + size;
+  char *end = d + size, s_end = s + size;
   long offset = (long)d >> 3, offset_e = (long)end >> 3;
-  long s_offset = (long)s >> 3;
+  long s_offset = (long)s >> 3, s_offset_e = (long)s_end >> 3;
   long widx = offset >> 6, widx_e = offset_e >> 6;
   long s_widx = s_offset >> 6;
   long bidx = offset & 0x3F, bidx_e = offset_e & 0x3F;
+  long s_bidx = s_offset & 0x3F, s_bidx_e = s_offset_e & 0x3F;
   long *pl = global_ptrlog + widx, *pl_e = global_ptrlog + widx_e;
   long *s_pl = global_ptrlog + s_widx;
   long mask = ((1UL << bidx) - 1), mask_e = (-1L << bidx_e);
-  long s_pl_val;
+  long s_mask = ((1UL << s_bidx) - 1), s_mask_e = (-1L << s_bidx_e);
+  long pl_val, s_pl_val;
 
-  if (widx == widx_e) {
-    mask |= mask_e;
-    s_pl_val = *s_pl & ~mask; /* should be done before the next
-                                in case d and s overlap */
-    *pl = (*pl & mask) | s_pl_val;
-    return;
+  long bitcnts = size >> 3;
+
+  /* TODO: do this more efficiently */
+  /* TODO: distinguish memcpy from memmove */
+  /* TODO: can we skip if size is not multiple of 8? */
+
+  long cur = bidx;
+  long s_cur = s_bidx;
+  while (bitcnts--) {
+    long s_curbit = 1UL << s_cur;
+    long bitset = (*s_pl & s_curbit) ? 1 : 0;
+    *pl = (*pl & ~(bitset << cur)) | (bitset << cur);
+    cur = (++cur & 0x3f);
+    s_cur = (++s_cur & 0x3f);
+    if (cur == 0) pl++;
+    if (s_cur == 0) s_pl++;
   }
-
-  s_pl_val = *s_pl & ~mask;
-  *pl = (*pl & mask) | s_pl_val;
-  pl++, s_pl++;
-  while (pl < pl_e)
-    *pl++ = *s_pl++;
-  s_pl_val = *s_pl & ~mask_e;
-  *pl = (*pl & mask_e) | s_pl_val;
 }
 
 static void inc_or_dec_ptrlog(char *p, long size, void (*f)(char *, char *)) {
