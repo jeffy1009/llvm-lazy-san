@@ -15,6 +15,9 @@ using namespace llvm;
 
 namespace {
   class LazySanVisitor : public InstVisitor<LazySanVisitor> {
+    // allocas to be processed at return
+    SmallVector<AllocaInst *, 16> AllocaInsts;
+
     Function *DecRC, *IncRC;
     Function *ClearPtrLog, *CpyPtrLog, *IncPtrLog, *DecPtrLog;
 
@@ -45,10 +48,15 @@ namespace {
     void handleTy(Instruction *InsertPos, Instruction *InsertPos2,
                   Value *V, bool ShouldInc);
 
+    void handleScopeEntry(IRBuilder<> &B, Value *Dest, Value *Size);
+    void handleScopeExit(IRBuilder<> &B, Value *Dest, Value *Size);
+
+    void visitAllocaInst(AllocaInst &I);
     void visitStoreInst(StoreInst &I);
     void visitIntrinsicInst(IntrinsicInst &I);
 
     void visitCallInst(CallInst &I);
+    void visitReturnInst(ReturnInst &I);
   };
 } // end anonymous namespace
 
@@ -203,6 +211,79 @@ void LazySanVisitor::handleTy(Instruction *InsertPos, Instruction *InsertPos2,
   assert(Ty->isIntegerTy() || Ty->isFloatingPointTy());
 }
 
+// Code copied from lib/Transforms/Utils/InlineFunction.cpp
+// Check whether this Value is used by a lifetime intrinsic.
+static bool isUsedByLifetimeMarker(Value *V) {
+  for (User *U : V->users()) {
+    if (IntrinsicInst *II = dyn_cast<IntrinsicInst>(U)) {
+      switch (II->getIntrinsicID()) {
+      default: break;
+      case Intrinsic::lifetime_start:
+      case Intrinsic::lifetime_end:
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Code copied from lib/Transforms/Utils/InlineFunction.cpp
+// Check whether the given alloca already has
+// lifetime.start or lifetime.end intrinsics.
+static bool hasLifetimeMarkers(AllocaInst *AI) {
+  Type *Ty = AI->getType();
+  Type *Int8PtrTy = Type::getInt8PtrTy(Ty->getContext(),
+                                       Ty->getPointerAddressSpace());
+  if (Ty == Int8PtrTy)
+    return isUsedByLifetimeMarker(AI);
+
+  // Do a scan to find all the casts to i8*.
+  for (User *U : AI->users()) {
+    if (U->getType() != Int8PtrTy) continue;
+    if (U->stripPointerCasts() != AI) continue;
+    if (isUsedByLifetimeMarker(U))
+      return true;
+  }
+  return false;
+}
+
+void LazySanVisitor::handleScopeEntry(IRBuilder<> &B, Value *Dest,
+                                      Value *Size) {
+  Value *Cast = B.CreateBitCast(Dest, Type::getInt8PtrTy(Dest->getContext()));
+  // TODO: not always initialize
+  B.CreateMemSet(Dest, Constant::getNullValue(B.getInt8Ty()), Size, 0);
+  B.CreateCall(ClearPtrLog, {Cast, Size});
+}
+
+void LazySanVisitor::handleScopeExit(IRBuilder<> &B, Value *Dest,
+                                     Value *Size) {
+  Value *Cast = B.CreateBitCast(Dest, Type::getInt8PtrTy(Dest->getContext()));
+  // handleTy(&I, nullptr, Dest, false);
+  B.CreateCall(DecPtrLog, {Cast, Size});
+}
+
+// Code copied from lib/Transforms/Instrumentation/AddressSanitizer.cpp
+static uint64_t getAllocaSizeInBytes(AllocaInst *AI) {
+  Type *Ty = AI->getAllocatedType();
+  uint64_t SizeInBytes =
+    AI->getModule()->getDataLayout().getTypeAllocSize(Ty);
+  return SizeInBytes;
+}
+
+void LazySanVisitor::visitAllocaInst(AllocaInst &I) {
+  // Allocas having lifetime markders will be processed at the lifetime markers
+  if (hasLifetimeMarkers(&I))
+    return;
+
+  assert(I.getParent() == &I.getFunction()->getEntryBlock()
+         && "alloca not in the entry basic block!");
+  assert(I.isStaticAlloca());
+
+  IRBuilder<> Builder(I.getNextNode());
+  handleScopeEntry(Builder, &I, Builder.getInt64(getAllocaSizeInBytes(&I)));
+  AllocaInsts.push_back(&I);
+}
+
 void LazySanVisitor::visitStoreInst(StoreInst &I) {
   Value *Ptr = I.getValueOperand();
   Type *Ty = Ptr->getType();
@@ -235,22 +316,14 @@ void LazySanVisitor::visitIntrinsicInst(IntrinsicInst &I) {
   switch (I.getIntrinsicID()) {
   case Intrinsic::lifetime_start: {
     Value *Dest = I.getArgOperand(1)->stripPointerCasts();
-    Value *Cast = Builder.CreateBitCast(Dest,
-                                        Type::getInt8PtrTy(I.getContext()));
     Value *Size = I.getArgOperand(0);
-    // TODO: not always initialize
-    Builder.CreateMemSet(Dest, Constant::getNullValue(Builder.getInt8Ty()),
-                         Size, 0);
-    Builder.CreateCall(ClearPtrLog, {Cast, Size});
+    handleScopeEntry(Builder, Dest, Size);
     break;
   }
   case Intrinsic::lifetime_end: {
     Value *Dest = I.getArgOperand(1)->stripPointerCasts();
-    Value *Cast = Builder.CreateBitCast(Dest,
-                                        Type::getInt8PtrTy(I.getContext()));
     Value *Size = I.getArgOperand(0);
-    // handleTy(&I, nullptr, Dest, false);
-    Builder.CreateCall(DecPtrLog, {Cast, Size});
+    handleScopeExit(Builder, Dest, Size);
     break;
   }
   default:;
@@ -323,6 +396,13 @@ void LazySanVisitor::visitCallInst(CallInst &I) {
     Builder.CreateCall(ClearPtrLog, {Cast, Size});
   }
   // handleTy(&I, I.getNextNode(), Dest, ShouldInc);
+}
+
+void LazySanVisitor::visitReturnInst(ReturnInst &I) {
+  IRBuilder<> Builder(&I);
+
+  for (AllocaInst *AI : AllocaInsts)
+    handleScopeExit(Builder, AI, Builder.getInt64(getAllocaSizeInBytes(AI)));
 }
 
 char LazySan::ID = 0;
