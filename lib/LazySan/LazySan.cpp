@@ -49,7 +49,6 @@ namespace {
     void visitIntrinsicInst(IntrinsicInst &I);
 
     void visitCallInst(CallInst &I);
-    void visitInvokeInst(InvokeInst &I);
   };
 } // end anonymous namespace
 
@@ -323,14 +322,6 @@ void LazySanVisitor::visitCallInst(CallInst &I) {
     Builder.CreateCall(DecPtrLog, {Cast, Size});
   }
   // handleTy(&I, I.getNextNode(), Dest, ShouldInc);
-}
-
-void LazySanVisitor::visitInvokeInst(InvokeInst &I) {
-  assert(!isa<MemIntrinsic>(&I)
-         && !I.getCalledFunction()->getName().equals("memset")
-         && !I.getCalledFunction()->getName().equals("memmove")
-         && !I.getCalledFunction()->getName().equals("memcpy")
-         && "memset, memcpy, memmove with InvokeInst??");
 }
 
 char LazySan::ID = 0;
