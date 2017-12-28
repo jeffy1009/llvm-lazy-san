@@ -320,6 +320,7 @@ void LazySanVisitor::visitCallInst(CallInst &I) {
     Builder.CreateCall(CpyPtrLog, {Cast, Cast2, Size});
   } else {
     Builder.CreateCall(DecPtrLog, {Cast, Size});
+    Builder.CreateCall(ClearPtrLog, {Cast, Size});
   }
   // handleTy(&I, I.getNextNode(), Dest, ShouldInc);
 }
