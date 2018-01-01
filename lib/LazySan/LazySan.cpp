@@ -53,8 +53,8 @@ namespace {
 
     void visitAllocaInst(AllocaInst &I);
     void visitStoreInst(StoreInst &I);
-    void visitIntrinsicInst(IntrinsicInst &I);
 
+    void handleLifetimeIntr(IntrinsicInst *I);
     void visitCallInst(CallInst &I);
     void visitReturnInst(ReturnInst &I);
   };
@@ -311,29 +311,26 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
   Builder.CreateCall(DecRC, {Cast, Cast2});
 }
 
-void LazySanVisitor::visitIntrinsicInst(IntrinsicInst &I) {
-  IRBuilder<> Builder(&I);
-  switch (I.getIntrinsicID()) {
-  case Intrinsic::lifetime_start: {
-    Value *Dest = I.getArgOperand(1)->stripPointerCasts();
-    Value *Size = I.getArgOperand(0);
+void LazySanVisitor::handleLifetimeIntr(IntrinsicInst *I) {
+  IRBuilder<> Builder(I);
+  Value *Dest = I->getArgOperand(1)->stripPointerCasts();
+  Value *Size = I->getArgOperand(0);
+  if (I->getIntrinsicID() == Intrinsic::lifetime_start)
     handleScopeEntry(Builder, Dest, Size);
-    break;
-  }
-  case Intrinsic::lifetime_end: {
-    Value *Dest = I.getArgOperand(1)->stripPointerCasts();
-    Value *Size = I.getArgOperand(0);
+  else
     handleScopeExit(Builder, Dest, Size);
-    break;
-  }
-  default:;
-  }
 }
 
 void LazySanVisitor::visitCallInst(CallInst &I) {
   // const DataLayout &DL = I.getModule()->getDataLayout();
   if (!I.getCalledFunction()) // skip indirect calls
     return;
+
+  if (IntrinsicInst *Intr = dyn_cast<IntrinsicInst>(&I)) {
+    if (Intr->getIntrinsicID() == Intrinsic::lifetime_start
+        || Intr->getIntrinsicID() == Intrinsic::lifetime_start)
+      return handleLifetimeIntr(Intr);
+  }
 
   if (!isa<MemIntrinsic>(&I)
       && !I.getCalledFunction()->getName().equals("memset")
