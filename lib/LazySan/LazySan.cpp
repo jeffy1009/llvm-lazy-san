@@ -341,37 +341,10 @@ void LazySanVisitor::visitCallInst(CallInst &I) {
 
   IRBuilder<> Builder(&I);
   Value *Dest = I.getArgOperand(0)->stripPointerCasts();
-  if (!checkTy(Dest->getType()))
-    return;
+  // TODO: optimize when there is no pointer type
+  // if (!checkTy(Dest->getType()))
+  //   return;
 
-  if (GetElementPtrInst *GEPI = dyn_cast<GetElementPtrInst>(Dest)) {
-    int i = 0, LastNonNull = -1;
-    for (User::const_op_iterator IdxI = GEPI->idx_begin(),
-           IdxE = GEPI->idx_end(); IdxI != IdxE; ++IdxI, ++i) {
-      if (isa<Constant>(*IdxI) && cast<Constant>(*IdxI)->isNullValue())
-        continue;
-      LastNonNull = i;
-    }
-
-    assert(LastNonNull != -1); // getDest should have stripped this off
-    if (LastNonNull == GEPI->getNumIndices()-1)
-      goto out;
-
-    SmallVector<Value *, 2> Indices(GEPI->idx_begin(),
-                                    GEPI->idx_begin()+LastNonNull+1);
-    Type *IdxTy =
-      GetElementPtrInst::getIndexedType(GEPI->getSourceElementType(), Indices);
-    if (!checkTy(IdxTy))
-      return;
-
-    Dest = Builder.CreateInBoundsGEP(Dest, Indices);
-
-    // TODO: check size
-    // Value *Size = I.getArgOperand(2);
-    // assert(DL.getTypeStoreSize(IdxType));
-  }
-
- out:
   bool ShouldInc = true;
   if (isa<MemSetInst>(&I)
       || I.getCalledFunction()->getName().equals("memset")
