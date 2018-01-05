@@ -323,7 +323,9 @@ void LazySanVisitor::handleLifetimeIntr(IntrinsicInst *I) {
 
 void LazySanVisitor::visitCallInst(CallInst &I) {
   // const DataLayout &DL = I.getModule()->getDataLayout();
-  if (!I.getCalledFunction()) // skip indirect calls
+  Module *M = I.getModule();
+  Function *CalledFunc = I.getCalledFunction();
+  if (!CalledFunc) // skip indirect calls
     return;
 
   if (IntrinsicInst *Intr = dyn_cast<IntrinsicInst>(&I)) {
@@ -332,11 +334,19 @@ void LazySanVisitor::visitCallInst(CallInst &I) {
       return handleLifetimeIntr(Intr);
   }
 
+  if (CalledFunc->getName().equals("malloc"))
+    return I.setCalledFunction(M->getFunction("malloc_wrap"));
+  if (CalledFunc->getName().equals("calloc"))
+    return I.setCalledFunction(M->getFunction("calloc_wrap"));
+  if (CalledFunc->getName().equals("realloc"))
+    return I.setCalledFunction(M->getFunction("realloc_wrap"));
+  if (CalledFunc->getName().equals("free"))
+    return I.setCalledFunction(M->getFunction("free_wrap"));
+
   if (!isa<MemIntrinsic>(&I)
-      && !I.getCalledFunction()->getName().equals("memset")
-      && !I.getCalledFunction()->getName().equals("memmove")
-      && !I.getCalledFunction()->getName().equals("memcpy")
-      && !I.getCalledFunction()->getName().equals("free"))
+      && !CalledFunc->getName().equals("memset")
+      && !CalledFunc->getName().equals("memmove")
+      && !CalledFunc->getName().equals("memcpy"))
     return;
 
   IRBuilder<> Builder(&I);
@@ -347,8 +357,7 @@ void LazySanVisitor::visitCallInst(CallInst &I) {
 
   bool ShouldInc = true;
   if (isa<MemSetInst>(&I)
-      || I.getCalledFunction()->getName().equals("memset")
-      || I.getCalledFunction()->getName().equals("free"))
+      || CalledFunc->getName().equals("memset"))
     ShouldInc = false;
 
   Value *Cast = Builder.CreateBitCast(Dest,
@@ -419,6 +428,20 @@ bool LazySan::runOnModule(Module &M) {
                         FunctionType::get(Type::getVoidTy(C),
                                           {Type::getInt8PtrTy(C),
                                               Type::getInt64Ty(C)}, false));
+  M.getOrInsertFunction("malloc_wrap",
+                        FunctionType::get(Type::getInt8PtrTy(C),
+                                          {Type::getInt64Ty(C)}, false));
+  M.getOrInsertFunction("calloc_wrap",
+                        FunctionType::get(Type::getInt8PtrTy(C),
+                                          {Type::getInt64Ty(C),
+                                              Type::getInt64Ty(C)}, false));
+  M.getOrInsertFunction("realloc_wrap",
+                        FunctionType::get(Type::getInt8PtrTy(C),
+                                          {Type::getInt8PtrTy(C),
+                                              Type::getInt64Ty(C)}, false));
+  M.getOrInsertFunction("free_wrap",
+                        FunctionType::get(Type::getVoidTy(C),
+                                          {Type::getInt8PtrTy(C)}, false));
 
   dbgs() << "Hello World!!!\n";
   for (Function &F : M.functions()) {
