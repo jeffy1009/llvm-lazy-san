@@ -287,8 +287,19 @@ void LazySanVisitor::visitAllocaInst(AllocaInst &I) {
 void LazySanVisitor::visitStoreInst(StoreInst &I) {
   Value *Ptr = I.getValueOperand();
   Type *Ty = Ptr->getType();
-  if (!Ty->isPointerTy())
-    return;
+  assert(!isa<PtrToIntInst>(Ptr));
+  if (!Ty->isPointerTy()) {
+    Value *Lhs = I.getPointerOperand();
+    // Not using stripPointerCasts here. we don't want to strip all-zero GEP
+    if (isa<BitCastInst>(Lhs))
+      Lhs = cast<BitCastInst>(Lhs)->getOperand(0);
+    assert(Lhs == Lhs->stripPointerCasts());
+    PointerType *LhsTy = cast<PointerType>(Lhs->getType());
+    assert(!isa<PtrToIntInst>(Lhs));
+    assert(!isa<GlobalAlias>(Lhs));
+    if (!checkTy(LhsTy))
+      return;
+  }
 
   IRBuilder<> Builder(&I);
 
@@ -299,15 +310,17 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
 
   // increase ref count
   // mark field as pointer type
-  Value *Cast = Builder.CreateBitCast(Ptr, Type::getInt8PtrTy(I.getContext()));
-  Value *Cast2 = Builder.CreateBitCast(I.getPointerOperand(),
-                                       Type::getInt8PtrTy(I.getContext()));
+  Value *Cast = Builder.CreateBitOrPointerCast(Ptr,
+                                               Type::getInt8PtrTy(I.getContext()));
+  Value *Cast2 = Builder.CreateBitOrPointerCast(I.getPointerOperand(),
+                                                Type::getInt8PtrTy(I.getContext()));
   Builder.CreateCall(IncRC, {Cast, Cast2});
 
   // decrease ref count
   // TODO: beware of uninitialized values
   LoadInst *PtrBefore = Builder.CreateLoad(I.getPointerOperand());
-  Cast = Builder.CreateBitCast(PtrBefore, Type::getInt8PtrTy(I.getContext()));
+  Cast = Builder.CreateBitOrPointerCast(PtrBefore,
+                                        Type::getInt8PtrTy(I.getContext()));
   Builder.CreateCall(DecRC, {Cast, Cast2});
 }
 
