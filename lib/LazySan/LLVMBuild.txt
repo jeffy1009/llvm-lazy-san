@@ -3,4 +3,3 @@ type = Library
 name = LazySan
 parent = Libraries
 required_libraries = Core Support
-; actually need IPO in required_libraries but llvm-build gives an error due to the cyclic dependency

@@ -6,8 +6,10 @@
 #include "llvm/Pass.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Transforms/IPO/PassManagerBuilder.h"
 #include "llvm/LazySan/LazySan.h"
+
+#include "dsa/DataStructure.h"
+#include "dsa/DSGraph.h"
 
 #define DEBUG_TYPE "lazy-san"
 
@@ -15,6 +17,7 @@ using namespace llvm;
 
 namespace {
   class LazySanVisitor : public InstVisitor<LazySanVisitor> {
+    const EQTDDataStructures *DSA;
     // allocas to be processed at return
     SmallVector<AllocaInst *, 16> AllocaInsts;
 
@@ -22,7 +25,7 @@ namespace {
     Function *ClearPtrLog, *CpyPtrLog, *IncPtrLog, *DecPtrLog;
 
   public:
-    LazySanVisitor(Module &M) {
+    LazySanVisitor(Module &M, const EQTDDataStructures *dsa) : DSA(dsa) {
       DecRC = M.getFunction("ls_dec_refcnt");
       IncRC = M.getFunction("ls_inc_refcnt");
       ClearPtrLog = M.getFunction("ls_clear_ptrlog");
@@ -402,7 +405,7 @@ char LazySan::ID = 0;
 static RegisterPass<LazySan> X("lazy-san", "Lazy Pointer Sanitizer Pass");
 
 bool LazySan::runOnFunction(Function &F) {
-  LazySanVisitor LSV(*F.getParent());
+  LazySanVisitor LSV(*F.getParent(), &getAnalysis<EQTDDataStructures>());
   LSV.visit(F);
 
   // To force linking
@@ -468,5 +471,6 @@ bool LazySan::runOnModule(Module &M) {
 }
 
 void LazySan::getAnalysisUsage(AnalysisUsage &AU) const {
+  AU.addRequired<EQTDDataStructures>();
   AU.setPreservesCFG();
 }
