@@ -12,6 +12,18 @@
 
 using namespace llvm;
 
+LazySanVisitor::LazySanVisitor(Module &M, const EQTDDataStructures *dsa,
+                               AliasAnalysis *aa)
+  : DSA(dsa), AA(aa) {
+  DecRC = M.getFunction("ls_dec_refcnt");
+  IncRC = M.getFunction("ls_inc_refcnt");
+  IncDecRC = M.getFunction("ls_incdec_refcnt");
+  ClearPtrLog = M.getFunction("ls_clear_ptrlog");
+  CpyPtrLog = M.getFunction("ls_copy_ptrlog");
+  IncPtrLog = M.getFunction("ls_inc_ptrlog");
+  DecPtrLog = M.getFunction("ls_dec_ptrlog");
+}
+
 bool LazySanVisitor::checkArrayTy(Type *Ty) {
   Type *ElemTy = Ty->getArrayElementType();
   if (ElemTy->isIntegerTy() || ElemTy->isFloatingPointTy())
@@ -243,45 +255,40 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
   if (!Ty->isPointerTy()) {
     Value *Lhs = I.getPointerOperand();
     // Not using stripPointerCasts here. we don't want to strip all-zero GEP
-    if (isa<BitCastInst>(Lhs))
+    if (isa<BitCastInst>(Lhs)) {
       Lhs = cast<BitCastInst>(Lhs)->getOperand(0);
-    assert(Lhs == Lhs->stripPointerCasts());
+      assert(Lhs == Lhs->stripPointerCasts());
+    }
+    assert(!isa<PtrToIntInst>(Lhs) && !isa<GlobalAlias>(Lhs));
     PointerType *LhsTy = cast<PointerType>(Lhs->getType());
-    assert(!isa<PtrToIntInst>(Lhs));
-    assert(!isa<GlobalAlias>(Lhs));
-    if (!checkTy(LhsTy))
+    if (!checkTy(LhsTy)) {
+      assert(!isPointerOperand(Ptr)); // double check with dangsan
       return;
+    }
   }
 
   // make sure that we are not missing any optimization that DangSan does
+  // Make sure that we are not missing any optimization that DangSan does
+
   assert(isPointerOperand(Ptr));
-  assert(!isStackPointer(Ptr));
-  assert(!isa<FunctionType>(cast<PointerType>(Ty)->getElementType()));
-  assert(!isGlobalPointer(Ptr));
-  assert(!isSameLoadStore(I.getPointerOperand(), Ptr));
-  assert(!isa<ConstantPointerNull>(Ptr));
+  // Even if RHS is statically known to be null or not a heap pointer, etc,
+  // we won't be saving much since we still need to decrease the refcnt of the
+  // previously pointed object, unless we also know that we don't have to.
+  // TODO: determine if the store is the first store to the location
+  /*
+  if (isa<FunctionType>(cast<PointerType>(Ty)->getElementType())
+      || isStackPointer(Ptr) || isGlobalPointer(Ptr) || isa<ConstantPointerNull>(Ptr));
+  */
+  if (isSameLoadStore(I.getPointerOperand(), Ptr))
+    return;
 
   IRBuilder<> Builder(&I);
 
-  // NOTE: we should increase refcnt before decreasing it..
-  // if it is decreased first, refcnt could become 0 and the quarantine cleared
-  // but if the pointer happens to point to the same object, refcnt will become
-  // one again..
-
-  // increase ref count
-  // mark field as pointer type
   Value *Cast = Builder.CreateBitOrPointerCast(Ptr,
                                                Type::getInt8PtrTy(I.getContext()));
   Value *Cast2 = Builder.CreateBitOrPointerCast(I.getPointerOperand(),
                                                 Type::getInt8PtrTy(I.getContext()));
-  Builder.CreateCall(IncRC, {Cast, Cast2});
-
-  // decrease ref count
-  // TODO: beware of uninitialized values
-  LoadInst *PtrBefore = Builder.CreateLoad(I.getPointerOperand());
-  Cast = Builder.CreateBitOrPointerCast(PtrBefore,
-                                        Type::getInt8PtrTy(I.getContext()));
-  Builder.CreateCall(DecRC, {Cast, Cast2});
+  Builder.CreateCall(IncDecRC, {Cast, Cast2});
 }
 
 void LazySanVisitor::handleLifetimeIntr(IntrinsicInst *I) {
@@ -387,6 +394,10 @@ bool LazySan::runOnModule(Module &M) {
                                           {Type::getInt8PtrTy(C),
                                               Type::getInt8PtrTy(C)}, false));
   M.getOrInsertFunction("ls_inc_refcnt",
+                        FunctionType::get(Type::getVoidTy(C),
+                                          {Type::getInt8PtrTy(C),
+                                              Type::getInt8PtrTy(C)}, false));
+  M.getOrInsertFunction("ls_incdec_refcnt",
                         FunctionType::get(Type::getVoidTy(C),
                                           {Type::getInt8PtrTy(C),
                                               Type::getInt8PtrTy(C)}, false));

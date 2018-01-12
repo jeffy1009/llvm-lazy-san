@@ -1,3 +1,6 @@
+#ifndef LLVM_LAZYSAN_LAZYSANVISITOR_H
+#define LLVM_LAZYSAN_LAZYSANVISITOR_H
+
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/IR/InstVisitor.h"
 #include "llvm/IR/IRBuilder.h"
@@ -14,19 +17,11 @@ class LazySanVisitor : public InstVisitor<LazySanVisitor> {
   // allocas to be processed at return
   SmallVector<AllocaInst *, 16> AllocaInsts;
 
-  Function *DecRC, *IncRC;
+  Function *DecRC, *IncRC, *IncDecRC;
   Function *ClearPtrLog, *CpyPtrLog, *IncPtrLog, *DecPtrLog;
 
  public:
- LazySanVisitor(Module &M, const EQTDDataStructures *dsa, AliasAnalysis *aa)
-   : DSA(dsa), AA(aa) {
-    DecRC = M.getFunction("ls_dec_refcnt");
-    IncRC = M.getFunction("ls_inc_refcnt");
-    ClearPtrLog = M.getFunction("ls_clear_ptrlog");
-    CpyPtrLog = M.getFunction("ls_copy_ptrlog");
-    IncPtrLog = M.getFunction("ls_inc_ptrlog");
-    DecPtrLog = M.getFunction("ls_dec_ptrlog");
-  }
+  LazySanVisitor(Module &M, const EQTDDataStructures *dsa, AliasAnalysis *aa);
 
   void visitAllocaInst(AllocaInst &I);
   void visitStoreInst(StoreInst &I);
@@ -66,3 +61,5 @@ class LazySanVisitor : public InstVisitor<LazySanVisitor> {
 };
 
 }
+
+#endif
