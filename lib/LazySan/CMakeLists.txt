@@ -2,6 +2,7 @@ include_directories(${CMAKE_SOURCE_DIR}/projects/poolalloc/include)
 
 set(SOURCES
   LazySan.cpp
+  DangSanCode.cpp
     )
 
 add_llvm_library(LLVMLazySan

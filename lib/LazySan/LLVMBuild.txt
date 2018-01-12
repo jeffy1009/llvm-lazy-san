@@ -2,4 +2,4 @@
 type = Library
 name = LazySan
 parent = Libraries
-required_libraries = Core Support
+required_libraries = Analysis Core Support

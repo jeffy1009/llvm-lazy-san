@@ -10,7 +10,7 @@ namespace llvm {
   public:
     static char ID;
 
-    LazySan() : ModulePass(ID) {}
+    LazySan();
 
     bool runOnFunction(Function &F);
     bool runOnModule(Module &M) override;

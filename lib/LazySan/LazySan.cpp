@@ -1,6 +1,4 @@
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/IR/InstVisitor.h"
-#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Type.h"
 #include "llvm/Pass.h"
@@ -8,60 +6,11 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/LazySan/LazySan.h"
 
-#include "dsa/DataStructure.h"
-#include "dsa/DSGraph.h"
+#include "LazySanVisitor.h"
 
 #define DEBUG_TYPE "lazy-san"
 
 using namespace llvm;
-
-namespace {
-  class LazySanVisitor : public InstVisitor<LazySanVisitor> {
-    const EQTDDataStructures *DSA;
-    // allocas to be processed at return
-    SmallVector<AllocaInst *, 16> AllocaInsts;
-
-    Function *DecRC, *IncRC;
-    Function *ClearPtrLog, *CpyPtrLog, *IncPtrLog, *DecPtrLog;
-
-  public:
-    LazySanVisitor(Module &M, const EQTDDataStructures *dsa) : DSA(dsa) {
-      DecRC = M.getFunction("ls_dec_refcnt");
-      IncRC = M.getFunction("ls_inc_refcnt");
-      ClearPtrLog = M.getFunction("ls_clear_ptrlog");
-      CpyPtrLog = M.getFunction("ls_copy_ptrlog");
-      IncPtrLog = M.getFunction("ls_inc_ptrlog");
-      DecPtrLog = M.getFunction("ls_dec_ptrlog");
-    }
-
-    // check*** - Only check for existance of pointer types
-    bool checkArrayTy(Type *Ty);
-    bool checkStructTy(Type *Ty);
-    bool checkTy(Type *Ty);
-
-    // handle*** - insert reference count inc/dec calls
-    void insertRefCntFunc(Instruction *InsertPos, Instruction *InsertPos2,
-                          Value *V, bool ShouldInc);
-    void handleArrayTy(Instruction *InsertPos, Instruction *InsertPos2,
-                       Value *V, Type *Ty, SmallVectorImpl<Value *> &Indices,
-                       bool ShouldInc);
-    void handleStructTy(Instruction *InsertPos, Instruction *InsertPos2,
-                        Value *V, Type *Ty, SmallVectorImpl<Value *> &Indices,
-                        bool ShouldInc);
-    void handleTy(Instruction *InsertPos, Instruction *InsertPos2,
-                  Value *V, bool ShouldInc);
-
-    void handleScopeEntry(IRBuilder<> &B, Value *Dest, Value *Size);
-    void handleScopeExit(IRBuilder<> &B, Value *Dest, Value *Size);
-
-    void visitAllocaInst(AllocaInst &I);
-    void visitStoreInst(StoreInst &I);
-
-    void handleLifetimeIntr(IntrinsicInst *I);
-    void visitCallInst(CallInst &I);
-    void visitReturnInst(ReturnInst &I);
-  };
-} // end anonymous namespace
 
 bool LazySanVisitor::checkArrayTy(Type *Ty) {
   Type *ElemTy = Ty->getArrayElementType();
@@ -304,6 +253,14 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
       return;
   }
 
+  // make sure that we are not missing any optimization that DangSan does
+  assert(isPointerOperand(Ptr));
+  assert(!isStackPointer(Ptr));
+  assert(!isa<FunctionType>(cast<PointerType>(Ty)->getElementType()));
+  assert(!isGlobalPointer(Ptr));
+  assert(!isSameLoadStore(I.getPointerOperand(), Ptr));
+  assert(!isa<ConstantPointerNull>(Ptr));
+
   IRBuilder<> Builder(&I);
 
   // NOTE: we should increase refcnt before decreasing it..
@@ -404,8 +361,14 @@ char LazySan::ID = 0;
 
 static RegisterPass<LazySan> X("lazy-san", "Lazy Pointer Sanitizer Pass");
 
+LazySan::LazySan() : ModulePass(ID) {
+  initializeAAResultsWrapperPassPass(*PassRegistry::getPassRegistry());
+}
+
 bool LazySan::runOnFunction(Function &F) {
-  LazySanVisitor LSV(*F.getParent(), &getAnalysis<EQTDDataStructures>());
+  LazySanVisitor LSV(*F.getParent(), &getAnalysis<EQTDDataStructures>(),
+                     &getAnalysis<AAResultsWrapperPass>(F).getAAResults());
+
   LSV.visit(F);
 
   // To force linking
@@ -472,5 +435,6 @@ bool LazySan::runOnModule(Module &M) {
 
 void LazySan::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.addRequired<EQTDDataStructures>();
+  AU.addRequired<AAResultsWrapperPass>();
   AU.setPreservesCFG();
 }
