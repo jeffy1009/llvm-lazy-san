@@ -252,10 +252,18 @@ void LazySanVisitor::visitAllocaInst(AllocaInst &I) {
   assert(I.getParent() == &I.getFunction()->getEntryBlock()
          && "alloca not in the entry basic block!");
   assert(I.isStaticAlloca());
+  assert(!I.isArrayAllocation());
 
+  // We clear ptrlog regardless of alloca type. We probably could do some
+  // optimization to ignore objects without any pointer type member,
+  // but for simplicity of design and easy debugging, just clear it all.
+  // TODO: merge ptrlog clearing in the backend!
   IRBuilder<> Builder(I.getNextNode());
   handleScopeEntry(Builder, &I, Builder.getInt64(getAllocaSizeInBytes(&I)));
-  AllocaInsts.push_back(&I);
+
+  // But we could ignore those objects when we decrease reference counts
+  if (checkTy(I.getType()))
+    AllocaInsts.push_back(&I);
 }
 
 void LazySanVisitor::visitStoreInst(StoreInst &I) {
@@ -309,11 +317,15 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
 
 void LazySanVisitor::handleLifetimeIntr(IntrinsicInst *I) {
   IRBuilder<> Builder(I);
-  Value *Dest = I->getArgOperand(1)->stripPointerCasts();
+  AllocaInst *Dest = cast<AllocaInst>(I->getArgOperand(1)->stripPointerCasts());
+  assert(!Dest->isArrayAllocation());
+
+  // We clear ptrlog for all types but optimize when we decrease refcnts.
+  // (see comments in visitAllocaInst)
   Value *Size = I->getArgOperand(0);
   if (I->getIntrinsicID() == Intrinsic::lifetime_start)
     handleScopeEntry(Builder, Dest, Size);
-  else
+  else if (checkTy(Dest->getType()))
     handleScopeExit(Builder, Dest, Size);
 }
 
