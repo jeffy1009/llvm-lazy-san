@@ -18,7 +18,7 @@ class LazySanVisitor : public InstVisitor<LazySanVisitor> {
   SmallVector<AllocaInst *, 16> AllocaInsts;
 
   Function *DecRC, *IncRC, *IncDecRC;
-  Function *ClearPtrLog, *CpyPtrLog, *IncPtrLog, *DecPtrLog;
+  Function *ClearPtrLog, *CpyPtrLog, *CheckPtrLog, *IncPtrLog, *DecPtrLog;
 
  public:
   LazySanVisitor(Module &M, const EQTDDataStructures *dsa, AliasAnalysis *aa);
@@ -51,6 +51,8 @@ class LazySanVisitor : public InstVisitor<LazySanVisitor> {
   void handleScopeExit(IRBuilder<> &B, Value *Dest, Value *Size);
 
   void handleLifetimeIntr(IntrinsicInst *I);
+  void handleMemSet(CallInst *I);
+  void handleMemTransfer(CallInst *I);
 
   // Code from DangSan
   bool isSameLoadStore(Value *ptr_addr, Value *obj_addr);
