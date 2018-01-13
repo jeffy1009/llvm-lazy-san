@@ -46,20 +46,22 @@ bool LazySanVisitor::checkArrayTy(Type *Ty) {
   return false;
 }
 
+// TODO: check if we are handling unions correctly
 bool LazySanVisitor::checkStructTy(Type *Ty) {
   for (unsigned int i = 0, e = Ty->getStructNumElements(); i < e; ++i) {
     Type *ElemTy = Ty->getStructElementType(i);
     if (ElemTy->isPointerTy())
       return true;
 
-    if (ElemTy->isArrayTy() && checkArrayTy(ElemTy))
-      return true;
-
-    if (ElemTy->isStructTy() && checkStructTy(ElemTy))
-      return true;
-
-    assert(ElemTy->isIntegerTy() || ElemTy->isFloatingPointTy());
-    continue;
+    if (ElemTy->isArrayTy()) {
+      if (checkArrayTy(ElemTy))
+        return true;
+    } else if (ElemTy->isStructTy()) {
+      if (checkStructTy(ElemTy))
+        return true;
+    } else {
+      assert(ElemTy->isIntegerTy() || ElemTy->isFloatingPointTy());
+    }
   }
   return false;
 }
