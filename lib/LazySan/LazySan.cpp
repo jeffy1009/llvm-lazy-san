@@ -214,8 +214,6 @@ static bool hasLifetimeMarkers(AllocaInst *AI) {
 void LazySanVisitor::handleScopeEntry(IRBuilder<> &B, Value *Dest,
                                       Value *Size) {
   Value *Cast = B.CreateBitCast(Dest, Type::getInt8PtrTy(Dest->getContext()));
-  // TODO: not always initialize
-  B.CreateMemSet(Dest, Constant::getNullValue(B.getInt8Ty()), Size, 0);
   B.CreateCall(ClearPtrLog, {Cast, Size});
 }
 
