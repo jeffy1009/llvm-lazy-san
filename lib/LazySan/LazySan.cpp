@@ -85,6 +85,28 @@ bool LazySanVisitor::checkTy(Type *Ty) {
   return false;
 }
 
+bool LazySanVisitor::checkStoreTy(Type *Ty) {
+  Type *ElemTy = cast<PointerType>(Ty)->getElementType();
+  if (ElemTy->isPointerTy())
+    return true;
+
+  assert(!ElemTy->isArrayTy());
+
+  if (ElemTy->isStructTy()) {
+    assert(ElemTy->getStructNumElements()==1);
+    Type *SElemTy = ElemTy->getStructElementType(0);
+    if (SElemTy->isPointerTy())
+      return true;
+
+    assert(!SElemTy->isArrayTy() && !SElemTy->isStructTy());
+    assert(SElemTy->isIntegerTy() || SElemTy->isFloatingPointTy());
+    return false;
+  }
+
+  assert(ElemTy->isIntegerTy() || ElemTy->isFloatingPointTy());
+  return false;
+}
+
 void LazySanVisitor::insertRefCntFunc(Instruction *InsertPos,
                                       Instruction *InsertPos2,
                                       Value *V, bool ShouldInc) {
@@ -269,8 +291,9 @@ void LazySanVisitor::visitAllocaInst(AllocaInst &I) {
 void LazySanVisitor::visitStoreInst(StoreInst &I) {
   Value *Ptr = I.getValueOperand();
   Type *Ty = Ptr->getType();
-  assert(!isa<PtrToIntInst>(Ptr));
-  if (!Ty->isPointerTy()) {
+  // TODO: make sure that we are not skipping any instructions we need to handle
+  // and skipping those we don't
+  if (!Ty->isPointerTy() && !isa<PtrToIntInst>(Ptr)) {
     Value *Lhs = I.getPointerOperand();
     // Not using stripPointerCasts here. we don't want to strip all-zero GEP
     if (isa<BitCastInst>(Lhs)) {
@@ -279,11 +302,12 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
     }
     assert(!isa<PtrToIntInst>(Lhs) && !isa<GlobalAlias>(Lhs));
     PointerType *LhsTy = cast<PointerType>(Lhs->getType());
-    if (!checkTy(LhsTy)) {
+    if (!checkStoreTy(LhsTy)) {
       assert(!isPointerOperand(Ptr)); // double check with dangsan
       return;
     }
-  }
+  } else
+    assert(isPointerOperand(Ptr));
 
   DSGraph *G = DSA->getDSGraph(*I.getFunction());
   if (DSNode *N = G->getNodeForValue(Ptr).getNode()) {
@@ -294,7 +318,6 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
 
   // Make sure that we are not missing any optimization that DangSan does
 
-  assert(isPointerOperand(Ptr));
   // Even if RHS is statically known to be null or not a heap pointer, etc,
   // we won't be saving much since we still need to decrease the refcnt of the
   // previously pointed object, unless we also know that we don't have to.
