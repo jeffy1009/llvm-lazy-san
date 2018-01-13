@@ -265,7 +265,13 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
     }
   }
 
-  // make sure that we are not missing any optimization that DangSan does
+  DSGraph *G = DSA->getDSGraph(*I.getFunction());
+  if (DSNode *N = G->getNodeForValue(Ptr).getNode()) {
+    assert(!N->isUnknownNode());
+    if (N->isCompleteNode() && !N->isHeapNode())
+      return;
+  }
+
   // Make sure that we are not missing any optimization that DangSan does
 
   assert(isPointerOperand(Ptr));
