@@ -27,34 +27,39 @@ LazySanVisitor::LazySanVisitor(Module &M, const EQTDDataStructures *dsa,
 
 bool LazySanVisitor::checkArrayTy(Type *Ty) {
   Type *ElemTy = Ty->getArrayElementType();
-  if (ElemTy->isIntegerTy() || ElemTy->isFloatingPointTy())
-    return false;
-
   if (ElemTy->isPointerTy())
     return true;
 
   if (ElemTy->isArrayTy())
     return checkArrayTy(ElemTy);
 
-  assert(ElemTy->isStructTy());
-  return checkStructTy(ElemTy);
+  if (ElemTy->isStructTy())
+    return checkStructTy(ElemTy);
+
+  // 8 bit integer types are an exception. It is common to cast char buffer
+  // to hold different types
+  // TODO: see if this is too conservative
+  if (ElemTy->isIntegerTy(8))
+    return true;
+
+  assert(ElemTy->isIntegerTy() || ElemTy->isFloatingPointTy());
+  return false;
 }
 
 bool LazySanVisitor::checkStructTy(Type *Ty) {
   for (unsigned int i = 0, e = Ty->getStructNumElements(); i < e; ++i) {
     Type *ElemTy = Ty->getStructElementType(i);
-    if (ElemTy->isIntegerTy() || ElemTy->isFloatingPointTy())
-      continue;
-    if (ElemTy->isPointerTy()) {
+    if (ElemTy->isPointerTy())
       return true;
-    } else if (ElemTy->isArrayTy()) {
-      if (checkArrayTy(ElemTy))
-        return true;
-    } else {
-      assert(ElemTy->isStructTy());
-      if (checkStructTy(ElemTy))
-        return true;
-    }
+
+    if (ElemTy->isArrayTy() && checkArrayTy(ElemTy))
+      return true;
+
+    if (ElemTy->isStructTy() && checkStructTy(ElemTy))
+      return true;
+
+    assert(ElemTy->isIntegerTy() || ElemTy->isFloatingPointTy());
+    continue;
   }
   return false;
 }
@@ -69,6 +74,12 @@ bool LazySanVisitor::checkTy(Type *Ty) {
 
   if (ElemTy->isStructTy())
     return checkStructTy(ElemTy);
+
+  // 8 bit integer types are an exception. It is common to cast char buffer
+  // to hold different types
+  // TODO: see if this is too conservative
+  if (ElemTy->isIntegerTy(8))
+    return true;
 
   assert(ElemTy->isIntegerTy() || ElemTy->isFloatingPointTy());
   return false;
