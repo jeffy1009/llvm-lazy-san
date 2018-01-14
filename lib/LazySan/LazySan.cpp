@@ -396,8 +396,20 @@ void LazySanVisitor::visitCallInst(CallInst &I) {
     return I.setCalledFunction(M->getFunction("calloc_wrap"));
   if (CalledFunc->getName().equals("realloc"))
     return I.setCalledFunction(M->getFunction("realloc_wrap"));
-  if (CalledFunc->getName().equals("free"))
-    return I.setCalledFunction(M->getFunction("free_wrap"));
+  if (CalledFunc->getName().equals("free")) {
+    // Tell free that we don't need to decrease refcnts if we know that the
+    // object does not have any pointer field
+    IRBuilder<> Builder(&I);
+    Value *Ptr = I.getArgOperand(0);
+    Value *Strip = Ptr->stripPointerCasts();
+    CallInst *New =
+      Builder.CreateCall(M->getFunction("free_wrap"),
+                         {Ptr, Builder.getInt32(checkTy(Strip->getType()))});
+    if (I.isTailCall()) New->setTailCall();
+    I.dropAllReferences();
+    I.eraseFromParent();
+    return;
+  }
 
   if (isa<MemSetInst>(&I)
       || CalledFunc->getName().equals("memset"))
@@ -487,7 +499,8 @@ bool LazySan::runOnModule(Module &M) {
                                               Type::getInt64Ty(C)}, false));
   M.getOrInsertFunction("free_wrap",
                         FunctionType::get(Type::getVoidTy(C),
-                                          {Type::getInt8PtrTy(C)}, false));
+                                          {Type::getInt8PtrTy(C),
+                                              Type::getInt32Ty(C)}, false));
 
   dbgs() << "Hello World!!!\n";
   for (Function &F : M.functions()) {
