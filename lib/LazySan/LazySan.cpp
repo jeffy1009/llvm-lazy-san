@@ -1,4 +1,5 @@
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/IR/GetElementPtrTypeIterator.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Type.h"
 #include "llvm/Pass.h"
@@ -82,28 +83,6 @@ bool LazySanVisitor::checkTy(Type *Ty) {
   // TODO: see if this is too conservative
   if (ElemTy->isIntegerTy(8))
     return true;
-
-  assert(ElemTy->isIntegerTy() || ElemTy->isFloatingPointTy());
-  return false;
-}
-
-bool LazySanVisitor::checkStoreTy(Type *Ty) {
-  Type *ElemTy = cast<PointerType>(Ty)->getElementType();
-  if (ElemTy->isPointerTy())
-    return true;
-
-  assert(!ElemTy->isArrayTy());
-
-  if (ElemTy->isStructTy()) {
-    assert(ElemTy->getStructNumElements()==1);
-    Type *SElemTy = ElemTy->getStructElementType(0);
-    if (SElemTy->isPointerTy())
-      return true;
-
-    assert(!SElemTy->isArrayTy() && !SElemTy->isStructTy());
-    assert(SElemTy->isIntegerTy() || SElemTy->isFloatingPointTy());
-    return false;
-  }
 
   assert(ElemTy->isIntegerTy() || ElemTy->isFloatingPointTy());
   return false;
@@ -296,20 +275,30 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
   // TODO: make sure that we are not skipping any instructions we need to handle
   // and skipping those we don't
   if (!Ty->isPointerTy() && !isa<PtrToIntInst>(Ptr)) {
+    // Here we search for possible union type store.
+    // We need this because pointer may be overwritten by non-pointer
+    // (and we have to decrease refcnt in that case)
     Value *Lhs = I.getPointerOperand();
-    // Not using stripPointerCasts here. we don't want to strip all-zero GEP
-    if (isa<BitCastInst>(Lhs)) {
-      Lhs = cast<BitCastInst>(Lhs)->getOperand(0);
-      assert(Lhs == Lhs->stripPointerCasts());
-    }
-    assert(!isa<PtrToIntInst>(Lhs) && !isa<GlobalAlias>(Lhs));
-    PointerType *LhsTy = cast<PointerType>(Lhs->getType());
-    if (!checkStoreTy(LhsTy)) {
-      assert(!isPointerOperand(Ptr)); // double check with dangsan
+    if (BitCastInst *BCI = dyn_cast<BitCastInst>(Lhs))
+      Lhs = BCI->getOperand(0);
+    GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(Lhs);
+    if (!GEP) {
+      assert(!isPointerOperand(Ptr));
       return;
     }
-  } else
-    assert(isPointerOperand(Ptr));
+    for (gep_type_iterator GTI = gep_type_begin(GEP), GTE = gep_type_end(GEP);
+         GTI != GTE; ++GTI) {
+      if (isa<StructType>(*GTI)
+          && !cast<StructType>(*GTI)->isLiteral()
+          && cast<StructType>(*GTI)->getName().startswith("union")
+          && checkStructTy(*GTI))
+        goto cont;
+    }
+    //assert(!isPointerOperand(Ptr)); // double check with dangsan
+    return;
+  }
+
+  assert(isPointerOperand(Ptr));  // double check with dangsan
 
   DSGraph *G = DSA->getDSGraph(*I.getFunction());
   if (DSNode *N = G->getNodeForValue(Ptr).getNode()) {
@@ -318,8 +307,7 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
       return;
   }
 
-  // Make sure that we are not missing any optimization that DangSan does
-
+ cont:
   // Even if RHS is statically known to be null or not a heap pointer, etc,
   // we won't be saving much since we still need to decrease the refcnt of the
   // previously pointed object, unless we also know that we don't have to.

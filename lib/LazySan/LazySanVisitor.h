@@ -34,7 +34,6 @@ class LazySanVisitor : public InstVisitor<LazySanVisitor> {
   bool checkArrayTy(Type *Ty);
   bool checkStructTy(Type *Ty);
   bool checkTy(Type *Ty);
-  bool checkStoreTy(Type *Ty);
 
   // handle*** - insert reference count inc/dec calls
   void insertRefCntFunc(Instruction *InsertPos, Instruction *InsertPos2,
