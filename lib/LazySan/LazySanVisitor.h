@@ -1,6 +1,7 @@
 #ifndef LLVM_LAZYSAN_LAZYSANVISITOR_H
 #define LLVM_LAZYSAN_LAZYSANVISITOR_H
 
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/IR/InstVisitor.h"
 #include "llvm/IR/IRBuilder.h"
@@ -49,6 +50,8 @@ class LazySanVisitor : public InstVisitor<LazySanVisitor> {
 
   void handleScopeEntry(IRBuilder<> &B, Value *Dest, Value *Size);
   void handleScopeExit(IRBuilder<> &B, Value *Dest, Value *Size);
+
+  bool shouldInstrument(Value *V, SmallPtrSetImpl<Value *> &Visited);
 
   void handleLifetimeIntr(IntrinsicInst *I);
   void handleMemSet(CallInst *I);

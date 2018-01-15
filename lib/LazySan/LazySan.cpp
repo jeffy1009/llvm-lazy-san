@@ -269,6 +269,75 @@ void LazySanVisitor::visitAllocaInst(AllocaInst &I) {
     AllocaInsts.push_back(&I);
 }
 
+static bool isSinglePointer(Value *V) {
+  const Type* T = V->getType();
+  return T->isPointerTy() && !T->getContainedType(0)->isPointerTy();
+}
+
+// TODO: do similar thing with RHS
+bool LazySanVisitor::shouldInstrument(Value *V,
+                                      SmallPtrSetImpl<Value *> &Visited) {
+  // Avoid recursion due to PHIs in Loops
+  if (!Visited.insert(V).second)
+    return false;
+
+  if (!isa<User>(V))
+    assert(isa<Argument>(V));
+  if (isa<Constant>(V))
+    assert(isa<ConstantExpr>(V) || isa<ConstantPointerNull>(V)
+           || isa<GlobalVariable>(V) || isa<UndefValue>(V));
+  if (isa<ConstantExpr>(V))
+    assert(cast<ConstantExpr>(V)->getOpcode() == Instruction::BitCast
+           || cast<ConstantExpr>(V)->getOpcode() == Instruction::GetElementPtr);
+  if (isa<Instruction>(V))
+    assert(isa<AllocaInst>(V) || isa<BitCastInst>(V) || isa<CallInst>(V)
+           || isa<GetElementPtrInst>(V) || isa<LoadInst>(V) || isa<PHINode>(V)
+           || isa<SelectInst>(V));
+
+  if (isa<BitCastInst>(V)
+      || (isa<ConstantExpr>(V)
+          && cast<ConstantExpr>(V)->getOpcode() == Instruction::BitCast)) {
+    V = cast<User>(V)->getOperand(0);
+    if (isDoublePointer(V))
+      return true;
+  }
+
+  if (isa<GetElementPtrInst>(V)
+      || (isa<ConstantExpr>(V)
+           && cast<ConstantExpr>(V)->getOpcode() == Instruction::GetElementPtr)) {
+    // TODO: does this really track union types correctly?
+    User *GEP = cast<User>(V);
+    Value *GEPOp = GEP->getOperand(0);
+    if (isa<BitCastInst>(GEPOp)
+      || (isa<ConstantExpr>(GEPOp)
+          && cast<ConstantExpr>(GEPOp)->getOpcode() == Instruction::BitCast))
+      assert(isSinglePointer(GEPOp)
+             && isSinglePointer(cast<User>(GEPOp)->getOperand(0)));
+    for (gep_type_iterator GTI = gep_type_begin(GEP), GTE = gep_type_end(GEP);
+         GTI != GTE; ++GTI) {
+      if (isa<StructType>(*GTI)
+          && !cast<StructType>(*GTI)->isLiteral()
+          && cast<StructType>(*GTI)->getName().startswith("union")
+          && checkStructTy(*GTI))
+        return true;
+    }
+  }
+
+  if (PHINode *Phi = dyn_cast<PHINode>(V)) {
+    bool Should = false;
+    for (unsigned i = 0, e = Phi->getNumIncomingValues(); i != e; i++)
+      Should |= shouldInstrument(Phi->getIncomingValue(i), Visited);
+    return Should;
+  }
+
+  if (SelectInst *SI = dyn_cast<SelectInst>(V))
+    return shouldInstrument(SI->getTrueValue(), Visited)
+      || shouldInstrument(SI->getFalseValue(), Visited);
+
+  // TODO: should we handle LoadInst?
+  return false;
+}
+
 void LazySanVisitor::visitStoreInst(StoreInst &I) {
   Value *Ptr = I.getValueOperand();
   Type *Ty = Ptr->getType();
@@ -279,26 +348,13 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
     // We need this because pointer may be overwritten by non-pointer
     // (and we have to decrease refcnt in that case)
     Value *Lhs = I.getPointerOperand();
-    if (BitCastInst *BCI = dyn_cast<BitCastInst>(Lhs))
-      Lhs = BCI->getOperand(0);
-    GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(Lhs);
-    if (!GEP) {
-      assert(!isPointerOperand(Ptr));
+    SmallPtrSet<Value *, 8> Visited;
+    if (!shouldInstrument(Lhs, Visited)) {
+      //assert(!isPointerOperand(Ptr));   // double check with dangsan
       return;
     }
-    for (gep_type_iterator GTI = gep_type_begin(GEP), GTE = gep_type_end(GEP);
-         GTI != GTE; ++GTI) {
-      if (isa<StructType>(*GTI)
-          && !cast<StructType>(*GTI)->isLiteral()
-          && cast<StructType>(*GTI)->getName().startswith("union")
-          && checkStructTy(*GTI))
-        goto cont;
-    }
-    //assert(!isPointerOperand(Ptr)); // double check with dangsan
-    return;
+    //assert(!isPointerOperand(Ptr));
   }
-
-  assert(isPointerOperand(Ptr));  // double check with dangsan
 
   DSGraph *G = DSA->getDSGraph(*I.getFunction());
   if (DSNode *N = G->getNodeForValue(Ptr).getNode()) {
@@ -307,7 +363,6 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
       return;
   }
 
- cont:
   // Even if RHS is statically known to be null or not a heap pointer, etc,
   // we won't be saving much since we still need to decrease the refcnt of the
   // previously pointed object, unless we also know that we don't have to.
