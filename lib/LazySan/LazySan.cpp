@@ -13,6 +13,16 @@
 
 using namespace llvm;
 
+cl::opt<bool>
+EnableChecks("lazysan-enable-check",
+             cl::desc("Enable lazy-san sanity checking"),
+             cl::init(false));
+
+cl::opt<bool>
+EnableDSA("lazysan-enable-dsa",
+             cl::desc("Enable DSA in lazy-san which can slow down build time"),
+             cl::init(false));
+
 LazySanVisitor::LazySanVisitor(Module &M, const EQTDDataStructures *dsa,
                                AliasAnalysis *aa)
   : DSA(dsa), AA(aa) {
@@ -356,11 +366,13 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
     //assert(!isPointerOperand(Ptr));
   }
 
-  DSGraph *G = DSA->getDSGraph(*I.getFunction());
-  if (DSNode *N = G->getNodeForValue(Ptr).getNode()) {
-    assert(!N->isUnknownNode());
-    if (N->isCompleteNode() && !N->isHeapNode())
-      return;
+  if (EnableDSA) {
+    DSGraph *G = DSA->getDSGraph(*I.getFunction());
+    if (DSNode *N = G->getNodeForValue(Ptr).getNode()) {
+      assert(!N->isUnknownNode());
+      if (N->isCompleteNode() && !N->isHeapNode())
+        return;
+    }
   }
 
   // Even if RHS is statically known to be null or not a heap pointer, etc,
@@ -404,7 +416,8 @@ void LazySanVisitor::handleMemSet(CallInst *I) {
     Builder.CreateBitCast(Dest, Type::getInt8PtrTy(I->getContext()));
   Value *Size = I->getArgOperand(2);
   if (!checkTy(Dest->getType())) {
-    Builder.CreateCall(CheckPtrLog, {DestCast, Size});
+    if (EnableChecks)
+      Builder.CreateCall(CheckPtrLog, {DestCast, Size});
     return;
   }
 
@@ -422,8 +435,10 @@ void LazySanVisitor::handleMemTransfer(CallInst *I) {
     Builder.CreateBitCast(Src, Type::getInt8PtrTy(I->getContext()));
   Value *Size = I->getArgOperand(2);
   if (!checkTy(Dest->getType()) && !checkTy(Src->getType())) {
-    Builder.CreateCall(CheckPtrLog, {DestCast, Size});
-    Builder.CreateCall(CheckPtrLog, {SrcCast, Size});
+    if (EnableChecks) {
+      Builder.CreateCall(CheckPtrLog, {DestCast, Size});
+      Builder.CreateCall(CheckPtrLog, {SrcCast, Size});
+    }
     return;
   }
 
@@ -492,7 +507,8 @@ LazySan::LazySan() : ModulePass(ID) {
 }
 
 bool LazySan::runOnFunction(Function &F) {
-  LazySanVisitor LSV(*F.getParent(), &getAnalysis<EQTDDataStructures>(),
+  LazySanVisitor LSV(*F.getParent(),
+                     EnableDSA ? &getAnalysis<EQTDDataStructures>() : nullptr,
                      &getAnalysis<AAResultsWrapperPass>(F).getAAResults());
 
   LSV.visit(F);
@@ -569,7 +585,8 @@ bool LazySan::runOnModule(Module &M) {
 }
 
 void LazySan::getAnalysisUsage(AnalysisUsage &AU) const {
-  AU.addRequired<EQTDDataStructures>();
+  if (EnableDSA)
+    AU.addRequired<EQTDDataStructures>();
   AU.addRequired<AAResultsWrapperPass>();
   AU.setPreservesCFG();
 }
