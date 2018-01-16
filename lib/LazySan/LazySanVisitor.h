@@ -18,7 +18,7 @@ class LazySanVisitor : public InstVisitor<LazySanVisitor> {
   // allocas to be processed at return
   SmallVector<AllocaInst *, 16> AllocaInsts;
 
-  Function *DecRC, *IncRC, *IncDecRC;
+  Function *DecRC, *IncRC, *IncDecRC, *IncDecRC2;
   Function *ClearPtrLog, *CpyPtrLog, *CheckPtrLog, *IncPtrLog, *DecPtrLog;
 
  public:

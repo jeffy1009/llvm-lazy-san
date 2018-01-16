@@ -1,4 +1,5 @@
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Analysis/VectorUtils.h"
 #include "llvm/IR/GetElementPtrTypeIterator.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Type.h"
@@ -29,6 +30,7 @@ LazySanVisitor::LazySanVisitor(Module &M, const EQTDDataStructures *dsa,
   DecRC = M.getFunction("ls_dec_refcnt");
   IncRC = M.getFunction("ls_inc_refcnt");
   IncDecRC = M.getFunction("ls_incdec_refcnt");
+  IncDecRC2 = M.getFunction("ls_incdec_refcnt2");
   ClearPtrLog = M.getFunction("ls_clear_ptrlog");
   CpyPtrLog = M.getFunction("ls_copy_ptrlog");
   CheckPtrLog = M.getFunction("ls_check_ptrlog");
@@ -314,6 +316,7 @@ bool LazySanVisitor::shouldInstrument(Value *V,
     // BCI should be a pointer type
     Type *ElemTy = BCI->getType()->getPointerElementType();
     assert(!ElemTy->isArrayTy());
+    assert(!(ElemTy->isVectorTy() && ElemTy->getScalarType()->isPointerTy()));
     if (isDoublePointer(BCI)
         || (ElemTy->isStructTy() && checkStructTy(ElemTy)))
       return true;
@@ -355,9 +358,10 @@ bool LazySanVisitor::shouldInstrument(Value *V,
 void LazySanVisitor::visitStoreInst(StoreInst &I) {
   Value *Ptr = I.getValueOperand();
   Type *Ty = Ptr->getType();
+  Type *ScalarTy = Ty->getScalarType();
   // TODO: make sure that we are not skipping any instructions we need to handle
   // and skipping those we don't
-  if (!Ty->isPointerTy() && !isa<PtrToIntInst>(Ptr)) {
+  if (!ScalarTy->isPointerTy() && !isa<PtrToIntInst>(Ptr)) {
     // Here we search for possible union type store.
     // We need this because pointer may be overwritten by non-pointer
     // (and we have to decrease refcnt in that case)
@@ -391,12 +395,31 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
     return;
 
   IRBuilder<> Builder(&I);
-
-  Value *Cast = Builder.CreateBitOrPointerCast(Ptr,
-                                               Type::getInt8PtrTy(I.getContext()));
-  Value *Cast2 = Builder.CreateBitOrPointerCast(I.getPointerOperand(),
-                                                Type::getInt8PtrTy(I.getContext()));
-  Builder.CreateCall(IncDecRC, {Cast, Cast2});
+  Value *DstCast
+    = Builder.CreateBitOrPointerCast(I.getPointerOperand(),
+                                     Type::getInt8PtrTy(I.getContext()));
+  if (Ty->isVectorTy()) {
+    assert(Ty->getVectorNumElements()==2);
+    assert(ScalarTy->isPointerTy());
+    // TODO: Change into a single call
+    Value *Elem0 = findScalarElement(Ptr, 0);
+    Value *Elem1 = findScalarElement(Ptr, 1);
+    if (!Elem0) Elem0 = const_cast<Value*>(getSplatValue(Ptr));
+    if (!Elem1) Elem1 = const_cast<Value*>(getSplatValue(Ptr));
+    if (!Elem0) Elem0 = Builder.CreateExtractElement(Ptr, (uint64_t)0);
+    if (!Elem1) Elem1 = Builder.CreateExtractElement(Ptr, (uint64_t)1);
+    Value *Elem0Cast =
+      Builder.CreateBitOrPointerCast(Elem0, Type::getInt8PtrTy(I.getContext()));
+    Value *Elem1Cast =
+      Builder.CreateBitOrPointerCast(Elem1, Type::getInt8PtrTy(I.getContext()));
+    Builder.CreateCall(IncDecRC, {Elem0Cast, DstCast});
+    Builder.CreateCall(IncDecRC2, {Elem1Cast, DstCast});
+  } else {
+    Value *SrcCast =
+      Builder.CreateBitOrPointerCast(Ptr,
+                                     Type::getInt8PtrTy(I.getContext()));
+    Builder.CreateCall(IncDecRC, {SrcCast, DstCast});
+  }
 }
 
 void LazySanVisitor::handleLifetimeIntr(IntrinsicInst *I) {
@@ -537,6 +560,10 @@ bool LazySan::runOnModule(Module &M) {
                                           {Type::getInt8PtrTy(C),
                                               Type::getInt8PtrTy(C)}, false));
   M.getOrInsertFunction("ls_incdec_refcnt",
+                        FunctionType::get(Type::getVoidTy(C),
+                                          {Type::getInt8PtrTy(C),
+                                              Type::getInt8PtrTy(C)}, false));
+  M.getOrInsertFunction("ls_incdec_refcnt2",
                         FunctionType::get(Type::getVoidTy(C),
                                           {Type::getInt8PtrTy(C),
                                               Type::getInt8PtrTy(C)}, false));
