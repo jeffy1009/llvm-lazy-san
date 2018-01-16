@@ -304,12 +304,20 @@ bool LazySanVisitor::shouldInstrument(Value *V,
            || isa<GetElementPtrInst>(V) || isa<LoadInst>(V) || isa<PHINode>(V)
            || isa<SelectInst>(V));
 
+  // TODO: Handling bitcasts and getelementptrs are not 100% accurate.
+  // Heavy IR Optimizations give strange bitcast/getelementptr patterns that is
+  // hard to analyze..
   if (isa<BitCastInst>(V)
       || (isa<ConstantExpr>(V)
           && cast<ConstantExpr>(V)->getOpcode() == Instruction::BitCast)) {
-    V = cast<User>(V)->getOperand(0);
-    if (isDoublePointer(V))
+    Value *BCI = cast<User>(V)->getOperand(0);
+    // BCI should be a pointer type
+    Type *ElemTy = BCI->getType()->getPointerElementType();
+    assert(!ElemTy->isArrayTy());
+    if (isDoublePointer(BCI)
+        || (ElemTy->isStructTy() && checkStructTy(ElemTy)))
       return true;
+    return shouldInstrument(BCI, Visited);
   }
 
   if (isa<GetElementPtrInst>(V)
@@ -317,12 +325,8 @@ bool LazySanVisitor::shouldInstrument(Value *V,
            && cast<ConstantExpr>(V)->getOpcode() == Instruction::GetElementPtr)) {
     // TODO: does this really track union types correctly?
     User *GEP = cast<User>(V);
-    Value *GEPOp = GEP->getOperand(0);
-    if (isa<BitCastInst>(GEPOp)
-      || (isa<ConstantExpr>(GEPOp)
-          && cast<ConstantExpr>(GEPOp)->getOpcode() == Instruction::BitCast))
-      assert(isSinglePointer(GEPOp)
-             && isSinglePointer(cast<User>(GEPOp)->getOperand(0)));
+    if (GEP->getNumOperands() == 1)
+      return shouldInstrument(GEP->getOperand(0), Visited);
     for (gep_type_iterator GTI = gep_type_begin(GEP), GTE = gep_type_end(GEP);
          GTI != GTE; ++GTI) {
       if (isa<StructType>(*GTI)
