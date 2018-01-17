@@ -300,7 +300,8 @@ bool LazySanVisitor::shouldInstrument(Value *V,
            || isa<GlobalVariable>(V) || isa<UndefValue>(V));
   if (isa<ConstantExpr>(V))
     assert(cast<ConstantExpr>(V)->getOpcode() == Instruction::BitCast
-           || cast<ConstantExpr>(V)->getOpcode() == Instruction::GetElementPtr);
+           || cast<ConstantExpr>(V)->getOpcode() == Instruction::GetElementPtr
+           || cast<ConstantExpr>(V)->getOpcode() == Instruction::IntToPtr);
   if (isa<Instruction>(V))
     assert(isa<AllocaInst>(V) || isa<BitCastInst>(V) || isa<CallInst>(V)
            || isa<GetElementPtrInst>(V) || isa<LoadInst>(V) || isa<PHINode>(V)
@@ -315,10 +316,10 @@ bool LazySanVisitor::shouldInstrument(Value *V,
     Value *BCI = cast<User>(V)->getOperand(0);
     // BCI should be a pointer type
     Type *ElemTy = BCI->getType()->getPointerElementType();
-    assert(!ElemTy->isArrayTy());
     assert(!(ElemTy->isVectorTy() && ElemTy->getScalarType()->isPointerTy()));
     if (isDoublePointer(BCI)
-        || (ElemTy->isStructTy() && checkStructTy(ElemTy)))
+        || (ElemTy->isStructTy() && checkStructTy(ElemTy))
+        || (ElemTy->isArrayTy() && checkArrayTy(ElemTy)))
       return true;
     return shouldInstrument(BCI, Visited);
   }
