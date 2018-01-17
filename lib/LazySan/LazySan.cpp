@@ -36,6 +36,9 @@ LazySanVisitor::LazySanVisitor(Module &M, const EQTDDataStructures *dsa,
   CheckPtrLog = M.getFunction("ls_check_ptrlog");
   IncPtrLog = M.getFunction("ls_inc_ptrlog");
   DecPtrLog = M.getFunction("ls_dec_ptrlog");
+  DecAndClearPtrLog = M.getFunction("ls_dec_clear_ptrlog");
+  IncDecCpyPtrLog = M.getFunction("ls_incdec_copy_ptrlog");
+  IncDecMovePtrLog = M.getFunction("ls_incdec_move_ptrlog");
 }
 
 bool LazySanVisitor::checkArrayTy(Type *Ty) {
@@ -449,8 +452,7 @@ void LazySanVisitor::handleMemSet(CallInst *I) {
     return;
   }
 
-  Builder.CreateCall(DecPtrLog, {DestCast, Size});
-  Builder.CreateCall(ClearPtrLog, {DestCast, Size});
+  Builder.CreateCall(DecAndClearPtrLog, {DestCast, Size});
 }
 
 void LazySanVisitor::handleMemTransfer(CallInst *I) {
@@ -470,9 +472,11 @@ void LazySanVisitor::handleMemTransfer(CallInst *I) {
     return;
   }
 
-  Builder.CreateCall(IncPtrLog, {SrcCast, Size});
-  Builder.CreateCall(DecPtrLog, {DestCast, Size});
-  Builder.CreateCall(CpyPtrLog, {DestCast, SrcCast, Size});
+  if (isa<MemCpyInst>(I)
+      || I->getCalledFunction()->getName().equals("memcpy"))
+    Builder.CreateCall(IncDecCpyPtrLog, {DestCast, SrcCast, Size});
+  else
+    Builder.CreateCall(IncDecMovePtrLog, {DestCast, SrcCast, Size});
 }
 
 void LazySanVisitor::visitCallInst(CallInst &I) {
@@ -577,6 +581,16 @@ bool LazySan::runOnModule(Module &M) {
                                           {Type::getInt8PtrTy(C),
                                               Type::getInt8PtrTy(C),
                                               Type::getInt64Ty(C)}, false));
+  M.getOrInsertFunction("ls_incdec_copy_ptrlog",
+                        FunctionType::get(Type::getVoidTy(C),
+                                          {Type::getInt8PtrTy(C),
+                                              Type::getInt8PtrTy(C),
+                                              Type::getInt64Ty(C)}, false));
+  M.getOrInsertFunction("ls_incdec_move_ptrlog",
+                        FunctionType::get(Type::getVoidTy(C),
+                                          {Type::getInt8PtrTy(C),
+                                              Type::getInt8PtrTy(C),
+                                              Type::getInt64Ty(C)}, false));
   M.getOrInsertFunction("ls_check_ptrlog",
                         FunctionType::get(Type::getVoidTy(C),
                                           {Type::getInt8PtrTy(C),
@@ -586,6 +600,10 @@ bool LazySan::runOnModule(Module &M) {
                                           {Type::getInt8PtrTy(C),
                                               Type::getInt64Ty(C)}, false));
   M.getOrInsertFunction("ls_dec_ptrlog",
+                        FunctionType::get(Type::getVoidTy(C),
+                                          {Type::getInt8PtrTy(C),
+                                              Type::getInt64Ty(C)}, false));
+  M.getOrInsertFunction("ls_dec_clear_ptrlog",
                         FunctionType::get(Type::getVoidTy(C),
                                           {Type::getInt8PtrTy(C),
                                               Type::getInt64Ty(C)}, false));

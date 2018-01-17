@@ -20,6 +20,7 @@ class LazySanVisitor : public InstVisitor<LazySanVisitor> {
 
   Function *DecRC, *IncRC, *IncDecRC, *IncDecRC2;
   Function *ClearPtrLog, *CpyPtrLog, *CheckPtrLog, *IncPtrLog, *DecPtrLog;
+  Function *DecAndClearPtrLog, *IncDecCpyPtrLog, *IncDecMovePtrLog;
 
  public:
   LazySanVisitor(Module &M, const EQTDDataStructures *dsa, AliasAnalysis *aa);
