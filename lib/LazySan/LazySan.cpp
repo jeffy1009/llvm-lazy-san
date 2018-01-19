@@ -41,7 +41,7 @@ LazySanVisitor::LazySanVisitor(Module &M, const EQTDDataStructures *dsa,
   IncDecMovePtrLog = M.getFunction("ls_incdec_move_ptrlog");
 }
 
-bool LazySanVisitor::checkArrayTy(Type *Ty) {
+bool LazySanVisitor::checkArrayTy(Type *Ty, bool IgnoreI8) {
   Type *ElemTy = Ty->getArrayElementType();
   if (ElemTy->isPointerTy())
     return true;
@@ -55,7 +55,7 @@ bool LazySanVisitor::checkArrayTy(Type *Ty) {
   // 8 bit integer types are an exception. It is common to cast char buffer
   // to hold different types
   // TODO: see if this is too conservative
-  if (ElemTy->isIntegerTy(8))
+  if (!IgnoreI8 && ElemTy->isIntegerTy(8))
     return true;
 
   assert(ElemTy->isIntegerTy() || ElemTy->isFloatingPointTy());
@@ -284,14 +284,16 @@ void LazySanVisitor::visitAllocaInst(AllocaInst &I) {
     AllocaInsts.push_back(&I);
 }
 
-static bool isSinglePointer(Value *V) {
-  const Type* T = V->getType();
-  return T->isPointerTy() && !T->getContainedType(0)->isPointerTy();
+static bool isUnionTy(Type *Ty) {
+  return isa<StructType>(Ty)
+    && !cast<StructType>(Ty)->isLiteral()
+    && cast<StructType>(Ty)->getName().startswith("union");
 }
 
 // TODO: do similar thing with RHS
 bool LazySanVisitor::shouldInstrument(Value *V,
-                                      SmallPtrSetImpl<Value *> &Visited) {
+                                      SmallPtrSetImpl<Value *> &Visited,
+                                      bool LookForUnion) {
   // Avoid recursion due to PHIs in Loops
   if (!Visited.insert(V).second)
     return false;
@@ -307,62 +309,70 @@ bool LazySanVisitor::shouldInstrument(Value *V,
            || cast<ConstantExpr>(V)->getOpcode() == Instruction::IntToPtr);
   if (isa<Instruction>(V))
     assert(isa<AllocaInst>(V) || isa<BitCastInst>(V) || isa<CallInst>(V)
-           || isa<GetElementPtrInst>(V) || isa<LoadInst>(V) || isa<PHINode>(V)
-           || isa<SelectInst>(V));
+           || isa<ExtractValueInst>(V) || isa<GetElementPtrInst>(V)
+           || isa<IntToPtrInst>(V) || isa<LoadInst>(V)
+           || isa<PHINode>(V) || isa<SelectInst>(V));
 
   // TODO: Handling bitcasts and getelementptrs are not 100% accurate.
-  // Heavy IR Optimizations give strange bitcast/getelementptr patterns that is
-  // hard to analyze..
   if (isa<BitCastInst>(V)
       || (isa<ConstantExpr>(V)
           && cast<ConstantExpr>(V)->getOpcode() == Instruction::BitCast)) {
     Value *BCI = cast<User>(V)->getOperand(0);
     // BCI should be a pointer type
     Type *ElemTy = BCI->getType()->getPointerElementType();
-    assert(!(ElemTy->isVectorTy() && ElemTy->getScalarType()->isPointerTy()));
-    if (isDoublePointer(BCI)
-        || (ElemTy->isStructTy() && checkStructTy(ElemTy))
-        || (ElemTy->isArrayTy() && checkArrayTy(ElemTy)))
+    assert(!(ElemTy->isVectorTy() && !ElemTy->getScalarType()->isIntegerTy()));
+    // TODO: there's an exceptional case where the following assertion fails in perlbench
+    // in S_unpack_rec function due to SROA.
+    // assert(LookForUnion
+    //        || !(ElemTy->isStructTy() &&
+    //             !(isUnionTy(ElemTy) && ElemTy->getStructNumElements()==1)));
+    assert(!(ElemTy->isArrayTy() && checkArrayTy(ElemTy, true)));
+    if (!LookForUnion
+        && (isDoublePointer(BCI)
+            || (ElemTy->isStructTy() && ElemTy->getStructNumElements()==1
+                && ElemTy->getStructElementType(0)->isPointerTy())
+            || (ElemTy->isArrayTy() && ElemTy->getArrayElementType()->isIntegerTy(8))))
       return true;
-    return shouldInstrument(BCI, Visited);
+    return shouldInstrument(BCI, Visited, LookForUnion);
   }
 
   if (isa<GetElementPtrInst>(V)
       || (isa<ConstantExpr>(V)
            && cast<ConstantExpr>(V)->getOpcode() == Instruction::GetElementPtr)) {
-    // TODO: does this really track union types correctly?
+    // TODO: currently if we meet any union types with any pointer field in it,
+    // we decide to instrument it
+    // TODO: checkStructTy will only visit one of the union member. fix it.
     User *GEP = cast<User>(V);
-    if (GEP->getNumOperands() == 1)
-      return shouldInstrument(GEP->getOperand(0), Visited);
     for (gep_type_iterator GTI = gep_type_begin(GEP), GTE = gep_type_end(GEP);
-         GTI != GTE; ++GTI) {
-      if (isa<StructType>(*GTI)
-          && !cast<StructType>(*GTI)->isLiteral()
-          && cast<StructType>(*GTI)->getName().startswith("union")
-          && checkStructTy(*GTI))
+         GTI != GTE; ++GTI)
+      if (isUnionTy(*GTI) && checkStructTy(*GTI))
         return true;
-    }
+    return shouldInstrument(GEP->getOperand(0), Visited,
+                            GEP->getNumOperands() > 2 ? true : false);
   }
 
   if (PHINode *Phi = dyn_cast<PHINode>(V)) {
     bool Should = false;
     for (unsigned i = 0, e = Phi->getNumIncomingValues(); i != e; i++)
-      Should |= shouldInstrument(Phi->getIncomingValue(i), Visited);
+      Should |= shouldInstrument(Phi->getIncomingValue(i), Visited,
+                                 LookForUnion);
     return Should;
   }
 
   if (SelectInst *SI = dyn_cast<SelectInst>(V))
-    return shouldInstrument(SI->getTrueValue(), Visited)
-      || shouldInstrument(SI->getFalseValue(), Visited);
+    return shouldInstrument(SI->getTrueValue(), Visited, LookForUnion)
+      || shouldInstrument(SI->getFalseValue(), Visited, LookForUnion);
 
   // TODO: should we handle LoadInst?
   return false;
 }
 
+// TODO: complete vectorization support
 void LazySanVisitor::visitStoreInst(StoreInst &I) {
   Value *Ptr = I.getValueOperand();
   Type *Ty = Ptr->getType();
   Type *ScalarTy = Ty->getScalarType();
+  assert(!Ty->isVectorTy() && "vectorization support not yet complete!");
   // TODO: make sure that we are not skipping any instructions we need to handle
   // and skipping those we don't
   if (!ScalarTy->isPointerTy() && !isa<PtrToIntInst>(Ptr)) {
@@ -488,7 +498,7 @@ void LazySanVisitor::visitCallInst(CallInst &I) {
 
   if (IntrinsicInst *Intr = dyn_cast<IntrinsicInst>(&I)) {
     if (Intr->getIntrinsicID() == Intrinsic::lifetime_start
-        || Intr->getIntrinsicID() == Intrinsic::lifetime_start)
+        || Intr->getIntrinsicID() == Intrinsic::lifetime_end)
       return handleLifetimeIntr(Intr);
   }
 

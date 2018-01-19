@@ -33,7 +33,7 @@ class LazySanVisitor : public InstVisitor<LazySanVisitor> {
 
  private:
   // check*** - Only check for existance of pointer types
-  bool checkArrayTy(Type *Ty);
+  bool checkArrayTy(Type *Ty, bool IgnoreI8 = false);
   bool checkStructTy(Type *Ty);
   bool checkTy(Type *Ty);
 
@@ -52,7 +52,8 @@ class LazySanVisitor : public InstVisitor<LazySanVisitor> {
   void handleScopeEntry(IRBuilder<> &B, Value *Dest, Value *Size);
   void handleScopeExit(IRBuilder<> &B, Value *Dest, Value *Size);
 
-  bool shouldInstrument(Value *V, SmallPtrSetImpl<Value *> &Visited);
+  bool shouldInstrument(Value *V, SmallPtrSetImpl<Value *> &Visited,
+                        bool LookForUnion = false);
 
   void handleLifetimeIntr(IntrinsicInst *I);
   void handleMemSet(CallInst *I);
