@@ -267,10 +267,13 @@ void LazySanVisitor::visitAllocaInst(AllocaInst &I) {
   if (hasLifetimeMarkers(&I))
     return;
 
-  assert(I.getParent() == &I.getFunction()->getEntryBlock()
-         && "alloca not in the entry basic block!");
-  assert(I.isStaticAlloca());
-  assert(!I.isArrayAllocation());
+  // TODO: handle allocas not in the entry block (in gcc)
+  if (I.getParent() != &I.getFunction()->getEntryBlock())
+    return;
+  // assert(I.getParent() == &I.getFunction()->getEntryBlock()
+  //        && "alloca not in the entry basic block!");
+  // assert(I.isStaticAlloca());
+  // assert(!I.isArrayAllocation());
 
   // We clear ptrlog regardless of alloca type. We probably could do some
   // optimization to ignore objects without any pointer type member,
@@ -438,7 +441,11 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
 
 void LazySanVisitor::handleLifetimeIntr(IntrinsicInst *I) {
   IRBuilder<> Builder(I);
-  AllocaInst *Dest = cast<AllocaInst>(I->getArgOperand(1)->stripPointerCasts());
+  Value *Arg = I->getArgOperand(1);
+  // encountered PHI node in gcc..
+  if (PHINode *Phi = dyn_cast<PHINode>(Arg))
+    Arg = Phi->getIncomingValue(0);
+  AllocaInst *Dest = cast<AllocaInst>(Arg->stripPointerCasts());
   assert(!Dest->isArrayAllocation());
 
   // We clear ptrlog for all types but optimize when we decrease refcnts.
