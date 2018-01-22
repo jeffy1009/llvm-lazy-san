@@ -313,7 +313,7 @@ bool LazySanVisitor::shouldInstrument(Value *V,
   if (isa<Instruction>(V))
     assert(isa<AllocaInst>(V) || isa<BitCastInst>(V) || isa<CallInst>(V)
            || isa<ExtractValueInst>(V) || isa<GetElementPtrInst>(V)
-           || isa<IntToPtrInst>(V) || isa<LoadInst>(V)
+           || isa<IntToPtrInst>(V) || isa<InvokeInst>(V) || isa<LoadInst>(V)
            || isa<PHINode>(V) || isa<SelectInst>(V));
 
   // TODO: Handling bitcasts and getelementptrs are not 100% accurate.
@@ -432,9 +432,18 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
     Builder.CreateCall(IncDecRC, {Elem0Cast, DstCast});
     Builder.CreateCall(IncDecRC2, {Elem1Cast, DstCast});
   } else {
-    Value *SrcCast =
-      Builder.CreateBitOrPointerCast(Ptr,
-                                     Type::getInt8PtrTy(I.getContext()));
+    const DataLayout &DL = I.getModule()->getDataLayout();
+    Value *SrcCast;
+    if (Ty->isPointerTy() ||
+        (Ty->isIntegerTy()
+         && Ty->getScalarSizeInBits() == DL.getPointerSizeInBits())) {
+      SrcCast =
+        Builder.CreateBitOrPointerCast(Ptr,
+                                       Type::getInt8PtrTy(I.getContext()));
+    } else {
+      //assert(Ty->isDoubleTy());
+      SrcCast = Constant::getNullValue(Builder.getInt8PtrTy());
+    }
     Builder.CreateCall(IncDecRC, {SrcCast, DstCast});
   }
 }
@@ -496,48 +505,63 @@ void LazySanVisitor::handleMemTransfer(CallInst *I) {
     Builder.CreateCall(IncDecMovePtrLog, {DestCast, SrcCast, Size});
 }
 
-void LazySanVisitor::visitCallInst(CallInst &I) {
-  // const DataLayout &DL = I.getModule()->getDataLayout();
+// Tell deallocators that we don't need to decrease refcnts if we know that the
+// object does not have any pointer field
+void LazySanVisitor::handleDeallocators(IRBuilder<> &B, CallInst *I,
+                                        Function *Func) {
+  Value *Ptr = I->getArgOperand(0);
+  Value *Strip = Ptr->stripPointerCasts();
+  CallInst *New =
+    B.CreateCall(Func, {Ptr, B.getInt32(checkTy(Strip->getType()))});
+  if (I->isTailCall()) New->setTailCall();
+  I->dropAllReferences();
+  I->eraseFromParent();
+}
+
+void LazySanVisitor::visitCallSite(CallSite CS) {
+  Instruction &I = *CS.getInstruction();
   Module *M = I.getModule();
-  Function *CalledFunc = I.getCalledFunction();
+  Function *CalledFunc = CS.getCalledFunction();
   if (!CalledFunc) // skip indirect calls
     return;
 
-  if (IntrinsicInst *Intr = dyn_cast<IntrinsicInst>(&I)) {
+  if (IntrinsicInst *Intr = dyn_cast<IntrinsicInst>(&I))
     if (Intr->getIntrinsicID() == Intrinsic::lifetime_start
         || Intr->getIntrinsicID() == Intrinsic::lifetime_end)
       return handleLifetimeIntr(Intr);
-  }
+
+  IRBuilder<> Builder(&I);
 
   if (CalledFunc->getName().equals("malloc"))
-    return I.setCalledFunction(M->getFunction("malloc_wrap"));
+    return CS.setCalledFunction(M->getFunction("malloc_wrap"));
   if (CalledFunc->getName().equals("calloc"))
-    return I.setCalledFunction(M->getFunction("calloc_wrap"));
+    return CS.setCalledFunction(M->getFunction("calloc_wrap"));
   if (CalledFunc->getName().equals("realloc"))
-    return I.setCalledFunction(M->getFunction("realloc_wrap"));
-  if (CalledFunc->getName().equals("free")) {
-    // Tell free that we don't need to decrease refcnts if we know that the
-    // object does not have any pointer field
-    IRBuilder<> Builder(&I);
-    Value *Ptr = I.getArgOperand(0);
-    Value *Strip = Ptr->stripPointerCasts();
-    CallInst *New =
-      Builder.CreateCall(M->getFunction("free_wrap"),
-                         {Ptr, Builder.getInt32(checkTy(Strip->getType()))});
-    if (I.isTailCall()) New->setTailCall();
-    I.dropAllReferences();
-    I.eraseFromParent();
-    return;
-  }
+    return CS.setCalledFunction(M->getFunction("realloc_wrap"));
+  if (CalledFunc->getName().equals("free"))
+    return handleDeallocators(Builder, cast<CallInst>(&I),
+                              M->getFunction("free_wrap"));
+
+  // C++ allocators & deallocators
+  if (CalledFunc->getName().equals("_Znwm") && M->getFunction("_Znwm")->empty())
+    return CS.setCalledFunction(M->getFunction("_Znwm_wrap"));
+  if (CalledFunc->getName().equals("_Znam") && M->getFunction("_Znam")->empty())
+    return CS.setCalledFunction(M->getFunction("_Znam_wrap"));
+  if (CalledFunc->getName().equals("_ZdlPv") && M->getFunction("_ZdlPv")->empty())
+    return handleDeallocators(Builder, cast<CallInst>(&I),
+                              M->getFunction("_ZdlPv_wrap"));
+  if (CalledFunc->getName().equals("_ZdaPv") && M->getFunction("_ZdaPv")->empty())
+    return handleDeallocators(Builder, cast<CallInst>(&I),
+                              M->getFunction("_ZdaPv_wrap"));
 
   if (isa<MemSetInst>(&I)
       || CalledFunc->getName().equals("memset"))
-    return handleMemSet(&I);
+    return handleMemSet(cast<CallInst>(&I));
 
   if (isa<MemTransferInst>(&I)
       || CalledFunc->getName().equals("memmove")
       || CalledFunc->getName().equals("memcpy"))
-    return handleMemTransfer(&I);
+    return handleMemTransfer(cast<CallInst>(&I));
 }
 
 void LazySanVisitor::visitReturnInst(ReturnInst &I) {
@@ -636,6 +660,20 @@ bool LazySan::runOnModule(Module &M) {
                                           {Type::getInt8PtrTy(C),
                                               Type::getInt64Ty(C)}, false));
   M.getOrInsertFunction("free_wrap",
+                        FunctionType::get(Type::getVoidTy(C),
+                                          {Type::getInt8PtrTy(C),
+                                              Type::getInt32Ty(C)}, false));
+  M.getOrInsertFunction("_Znwm_wrap",
+                        FunctionType::get(Type::getInt8PtrTy(C),
+                                          {Type::getInt64Ty(C)}, false));
+  M.getOrInsertFunction("_Znam_wrap",
+                        FunctionType::get(Type::getInt8PtrTy(C),
+                                          {Type::getInt64Ty(C)}, false));
+  M.getOrInsertFunction("_ZdlPv_wrap",
+                        FunctionType::get(Type::getVoidTy(C),
+                                          {Type::getInt8PtrTy(C),
+                                              Type::getInt32Ty(C)}, false));
+  M.getOrInsertFunction("_ZdaPv_wrap",
                         FunctionType::get(Type::getVoidTy(C),
                                           {Type::getInt8PtrTy(C),
                                               Type::getInt32Ty(C)}, false));

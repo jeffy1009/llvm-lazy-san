@@ -28,7 +28,7 @@ class LazySanVisitor : public InstVisitor<LazySanVisitor> {
   void visitAllocaInst(AllocaInst &I);
   void visitStoreInst(StoreInst &I);
 
-  void visitCallInst(CallInst &I);
+  void visitCallSite(CallSite CS);
   void visitReturnInst(ReturnInst &I);
 
  private:
@@ -56,6 +56,7 @@ class LazySanVisitor : public InstVisitor<LazySanVisitor> {
                         bool LookForUnion = false);
 
   void handleLifetimeIntr(IntrinsicInst *I);
+  void handleDeallocators(IRBuilder<> &B, CallInst *I, Function *Func);
   void handleMemSet(CallInst *I);
   void handleMemTransfer(CallInst *I);
 
