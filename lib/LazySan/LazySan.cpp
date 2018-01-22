@@ -415,37 +415,19 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
   Value *DstCast
     = Builder.CreateBitOrPointerCast(I.getPointerOperand(),
                                      Type::getInt8PtrTy(I.getContext()));
-  if (Ty->isVectorTy()) {
-    assert(Ty->getVectorNumElements()==2);
-    assert(ScalarTy->isPointerTy());
-    // TODO: Change into a single call
-    Value *Elem0 = findScalarElement(Ptr, 0);
-    Value *Elem1 = findScalarElement(Ptr, 1);
-    if (!Elem0) Elem0 = const_cast<Value*>(getSplatValue(Ptr));
-    if (!Elem1) Elem1 = const_cast<Value*>(getSplatValue(Ptr));
-    if (!Elem0) Elem0 = Builder.CreateExtractElement(Ptr, (uint64_t)0);
-    if (!Elem1) Elem1 = Builder.CreateExtractElement(Ptr, (uint64_t)1);
-    Value *Elem0Cast =
-      Builder.CreateBitOrPointerCast(Elem0, Type::getInt8PtrTy(I.getContext()));
-    Value *Elem1Cast =
-      Builder.CreateBitOrPointerCast(Elem1, Type::getInt8PtrTy(I.getContext()));
-    Builder.CreateCall(IncDecRC, {Elem0Cast, DstCast});
-    Builder.CreateCall(IncDecRC2, {Elem1Cast, DstCast});
+  const DataLayout &DL = I.getModule()->getDataLayout();
+  Value *SrcCast;
+  if (Ty->isPointerTy() ||
+      (Ty->isIntegerTy()
+       && Ty->getScalarSizeInBits() == DL.getPointerSizeInBits())) {
+    SrcCast =
+      Builder.CreateBitOrPointerCast(Ptr,
+                                     Type::getInt8PtrTy(I.getContext()));
   } else {
-    const DataLayout &DL = I.getModule()->getDataLayout();
-    Value *SrcCast;
-    if (Ty->isPointerTy() ||
-        (Ty->isIntegerTy()
-         && Ty->getScalarSizeInBits() == DL.getPointerSizeInBits())) {
-      SrcCast =
-        Builder.CreateBitOrPointerCast(Ptr,
-                                       Type::getInt8PtrTy(I.getContext()));
-    } else {
-      //assert(Ty->isDoubleTy());
-      SrcCast = Constant::getNullValue(Builder.getInt8PtrTy());
-    }
-    Builder.CreateCall(IncDecRC, {SrcCast, DstCast});
+    //assert(Ty->isDoubleTy());
+    SrcCast = Constant::getNullValue(Builder.getInt8PtrTy());
   }
+  Builder.CreateCall(IncDecRC, {SrcCast, DstCast});
 }
 
 void LazySanVisitor::handleLifetimeIntr(IntrinsicInst *I) {
