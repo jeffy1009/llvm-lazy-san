@@ -1798,6 +1798,8 @@ Instruction *InstCombiner::visitGetElementPtrInst(GetElementPtrInst &GEP) {
       PtrOp = BC;
   }
 
+  return nullptr; // [lazy-san] this complicates lazy-san analysis
+                  // TODO: reenable
   /// See if we can simplify:
   ///   X = bitcast A* to B*
   ///   Y = gep X, <...constant indices...>
