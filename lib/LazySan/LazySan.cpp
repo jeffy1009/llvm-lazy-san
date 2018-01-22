@@ -595,92 +595,24 @@ bool LazySan::runOnFunction(Function &F) {
   return true;
 }
 
-bool LazySan::runOnModule(Module &M) {
-  LLVMContext &C = M.getContext();
-  M.getOrInsertFunction("ls_dec_refcnt",
-                        FunctionType::get(Type::getVoidTy(C),
-                                          {Type::getInt8PtrTy(C),
-                                              Type::getInt8PtrTy(C)}, false));
-  M.getOrInsertFunction("ls_inc_refcnt",
-                        FunctionType::get(Type::getVoidTy(C),
-                                          {Type::getInt8PtrTy(C),
-                                              Type::getInt8PtrTy(C)}, false));
-  M.getOrInsertFunction("ls_incdec_refcnt",
-                        FunctionType::get(Type::getVoidTy(C),
-                                          {Type::getInt8PtrTy(C),
-                                              Type::getInt8PtrTy(C)}, false));
-  M.getOrInsertFunction("ls_incdec_refcnt2",
-                        FunctionType::get(Type::getVoidTy(C),
-                                          {Type::getInt8PtrTy(C),
-                                              Type::getInt8PtrTy(C)}, false));
-  M.getOrInsertFunction("ls_clear_ptrlog",
-                        FunctionType::get(Type::getVoidTy(C),
-                                          {Type::getInt8PtrTy(C),
-                                              Type::getInt64Ty(C)}, false));
-  M.getOrInsertFunction("ls_copy_ptrlog",
-                        FunctionType::get(Type::getVoidTy(C),
-                                          {Type::getInt8PtrTy(C),
-                                              Type::getInt8PtrTy(C),
-                                              Type::getInt64Ty(C)}, false));
-  M.getOrInsertFunction("ls_incdec_copy_ptrlog",
-                        FunctionType::get(Type::getVoidTy(C),
-                                          {Type::getInt8PtrTy(C),
-                                              Type::getInt8PtrTy(C),
-                                              Type::getInt64Ty(C)}, false));
-  M.getOrInsertFunction("ls_incdec_move_ptrlog",
-                        FunctionType::get(Type::getVoidTy(C),
-                                          {Type::getInt8PtrTy(C),
-                                              Type::getInt8PtrTy(C),
-                                              Type::getInt64Ty(C)}, false));
-  M.getOrInsertFunction("ls_check_ptrlog",
-                        FunctionType::get(Type::getVoidTy(C),
-                                          {Type::getInt8PtrTy(C),
-                                              Type::getInt64Ty(C)}, false));
-  M.getOrInsertFunction("ls_inc_ptrlog",
-                        FunctionType::get(Type::getVoidTy(C),
-                                          {Type::getInt8PtrTy(C),
-                                              Type::getInt64Ty(C)}, false));
-  M.getOrInsertFunction("ls_dec_ptrlog",
-                        FunctionType::get(Type::getVoidTy(C),
-                                          {Type::getInt8PtrTy(C),
-                                              Type::getInt64Ty(C)}, false));
-  M.getOrInsertFunction("ls_dec_clear_ptrlog",
-                        FunctionType::get(Type::getVoidTy(C),
-                                          {Type::getInt8PtrTy(C),
-                                              Type::getInt64Ty(C)}, false));
-  M.getOrInsertFunction("malloc_wrap",
-                        FunctionType::get(Type::getInt8PtrTy(C),
-                                          {Type::getInt64Ty(C)}, false));
-  M.getOrInsertFunction("calloc_wrap",
-                        FunctionType::get(Type::getInt8PtrTy(C),
-                                          {Type::getInt64Ty(C),
-                                              Type::getInt64Ty(C)}, false));
-  M.getOrInsertFunction("realloc_wrap",
-                        FunctionType::get(Type::getInt8PtrTy(C),
-                                          {Type::getInt8PtrTy(C),
-                                              Type::getInt64Ty(C)}, false));
-  M.getOrInsertFunction("free_wrap",
-                        FunctionType::get(Type::getVoidTy(C),
-                                          {Type::getInt8PtrTy(C),
-                                              Type::getInt32Ty(C)}, false));
-  M.getOrInsertFunction("_Znwm_wrap",
-                        FunctionType::get(Type::getInt8PtrTy(C),
-                                          {Type::getInt64Ty(C)}, false));
-  M.getOrInsertFunction("_Znam_wrap",
-                        FunctionType::get(Type::getInt8PtrTy(C),
-                                          {Type::getInt64Ty(C)}, false));
-  M.getOrInsertFunction("_ZdlPv_wrap",
-                        FunctionType::get(Type::getVoidTy(C),
-                                          {Type::getInt8PtrTy(C),
-                                              Type::getInt32Ty(C)}, false));
-  M.getOrInsertFunction("_ZdaPv_wrap",
-                        FunctionType::get(Type::getVoidTy(C),
-                                          {Type::getInt8PtrTy(C),
-                                              Type::getInt32Ty(C)}, false));
+// IMPORTANT: make sure these include all functions in the static lib
+static char const *LSFuncs[] = {
+  "atexit_hook", "init_lazysan", "sys_mmap", "get_obj_info", "delete_obj_info", "ls_free", "alloc_common", "alloc_obj_info", "free_common", "ls_dec_refcnt", "ls_inc_refcnt", "ls_incdec_refcnt", "ls_incdec_refcnt2", "ls_clear_ptrlog", "ls_copy_ptrlog", "ls_incdec_copy_ptrlog", "ls_incdec_move_ptrlog", "ls_check_ptrlog", "ls_inc_ptrlog", "ls_dec_ptrlog", "ls_dec_clear_ptrlog", "malloc_wrap", "calloc_wrap", "realloc_wrap", "free_wrap", "_Znwm_wrap", "_Znam_wrap", "_ZdlPv_wrap", "_ZdaPv_wrap",
+  "metaset_4", "metaset_8", "metaget_4", "metaget_8",
+  "RBTreeCompare", "RBTreeCreate", "LeftRotate", "RightRotate", "TreeInsertHelp", "RBTreeInsert", "TreeSuccessor", "InorderTreePrint", "TreeDestHelper", "RBTreeDestroy", "RBTreePrint", "RBExactQuery", "RBDeleteFixUp", "RBDelete"
+};
 
+static bool isLSFunc(StringRef name) {
+  bool Found = false;
+  for (unsigned int i = 0; i < (sizeof(LSFuncs) / sizeof(LSFuncs[0])); ++i)
+    Found |= StringRef(LSFuncs[i]).equals(name);
+  return Found;
+}
+
+bool LazySan::runOnModule(Module &M) {
   dbgs() << "Hello World!!!\n";
   for (Function &F : M.functions()) {
-    if (F.empty())
+    if (F.empty() || isLSFunc(F.getName()))
       continue;
 
     runOnFunction(F);
