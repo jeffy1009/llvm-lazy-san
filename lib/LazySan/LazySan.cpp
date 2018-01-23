@@ -279,7 +279,10 @@ void LazySanVisitor::visitAllocaInst(AllocaInst &I) {
   // optimization to ignore objects without any pointer type member,
   // but for simplicity of design and easy debugging, just clear it all.
   // TODO: merge ptrlog clearing in the backend!
-  IRBuilder<> Builder(I.getNextNode());
+  Instruction *InsertPos = I.getNextNode();
+  while (isa<AllocaInst>(InsertPos))
+    InsertPos = InsertPos->getNextNode();
+  IRBuilder<> Builder(InsertPos);
   handleScopeEntry(Builder, &I, Builder.getInt64(getAllocaSizeInBytes(&I)));
 
   // But we could ignore those objects when we decrease reference counts
@@ -478,6 +481,12 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
     NeedInc = false;
 
   IRBuilder<> Builder(&I);
+  if (!I.getDebugLoc()) {
+    Instruction *InstDL = I.getNextNode();
+    while (!InstDL->getDebugLoc()) InstDL = InstDL->getNextNode();
+    Builder.SetCurrentDebugLocation(InstDL->getDebugLoc());
+  }
+
   Value *DstCast =
     Builder.CreateBitOrPointerCast(Lhs, Type::getInt8PtrTy(I.getContext()));
   Value *SrcCast;
