@@ -15,47 +15,6 @@ bool LazySanVisitor::isSameLoadStore(Value *ptr_addr, Value *obj_addr) {
   return false;
 }
 
-bool LazySanVisitor::isStackPointer(Value *V) {
-  if (isa<AllocaInst>(V)) {
-    DEBUG_MSG(errs() << "Stack variable \n");
-    return true;
-  }
-
-  if (BitCastInst *BC = dyn_cast<BitCastInst>(V)) {
-    return isStackPointer(BC->getOperand(0));
-  } else if (PtrToIntInst *PI = dyn_cast<PtrToIntInst>(V)) {
-    return isStackPointer(PI->getOperand(0));
-  } else if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(V)) {
-    return isStackPointer(GEP->getPointerOperand());
-  }
-
-  DEBUG_MSG(errs() << "Not a Stack variable \n");
-  return false;
-}
-
-bool LazySanVisitor::isGlobalPointer(Value *V) {
-  V = V->stripPointerCasts();
-  if (isa<GlobalValue>(V) || AA->pointsToConstantMemory(V)) {
-    return true;
-  }
-
-  if (BitCastInst *BC = dyn_cast<BitCastInst>(V)) {
-    return isGlobalPointer(BC->getOperand(0));
-  } else if (PtrToIntInst *PI = dyn_cast<PtrToIntInst>(V)) {
-    return isGlobalPointer(PI->getOperand(0));
-  } else if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(V)) {
-    return isGlobalPointer(GEP->getPointerOperand());
-  } else if (LoadInst *LI = dyn_cast<LoadInst>(V)) {          /* TODO: Remove load instruction */
-    if (AA->pointsToConstantMemory(LI->getOperand(0))) {
-      DEBUG_MSG(errs() << "Global constant load \n");
-      return true;
-    }
-  } else if (SelectInst *SI = dyn_cast<SelectInst>(V)) {
-    return (isGlobalPointer(SI->getTrueValue()) && isGlobalPointer(SI->getFalseValue()));
-  }
-  return false;
-}
-
 bool LazySanVisitor::isPointerOperand(Value *V) {
   if (V->getType()->isPointerTy()) {
     DEBUG_MSG(errs() << "Direct Pointer Type \n");

@@ -370,19 +370,88 @@ bool LazySanVisitor::shouldInstrument(Value *V,
   return false;
 }
 
+static bool visitConstant(Constant *C) {
+  if (isa<GlobalVariable>(C))
+    return false;
+
+  switch (cast<ConstantExpr>(C)->getOpcode()) {
+  case Instruction::BitCast:
+    return visitConstant(cast<Constant>(C->stripPointerCasts()));
+  case Instruction::GetElementPtr:
+    return visitConstant(cast<Constant>(C->getOperand(0)));
+  case Instruction::IntToPtr: // very rare case..
+    return false;
+  default:
+    assert(0);
+  }
+}
+
+bool LazySanVisitor::maybeHeapPtr(Value *V, SmallPtrSetImpl<Value *> &Visited) {
+  if (!Visited.insert(V).second)
+    return false;
+
+  Type *Ty = V->getType();
+  if (Ty->isPointerTy() && Ty->getPointerElementType()->isFunctionTy())
+    return false;
+
+  if (isa<Argument>(V))
+    return true;
+
+  if (isa<ConstantPointerNull>(V) || isa<GlobalValue>(V)
+      || AA->pointsToConstantMemory(V))
+    return false;
+
+  if (ConstantExpr *CE = dyn_cast<ConstantExpr>(V))
+    return visitConstant(CE);
+
+  switch (cast<Instruction>(V)->getOpcode()) {
+  case Instruction::Alloca:
+    return false;
+  case Instruction::Call:
+  case Instruction::IntToPtr:
+  case Instruction::PtrToInt:
+    return true;
+  case Instruction::Load: {
+    assert(!AA->pointsToConstantMemory(cast<LoadInst>(V)->getOperand(0)));
+    return true;
+  }
+  case Instruction::BitCast:
+    return maybeHeapPtr(cast<BitCastInst>(V)->stripPointerCasts(), Visited);
+  case Instruction::GetElementPtr:
+    return maybeHeapPtr(cast<GetElementPtrInst>(V)->getPointerOperand(), Visited);
+  case Instruction::PHI: {
+    PHINode *Phi = cast<PHINode>(V);
+    bool Maybe = false;
+    for (unsigned i = 0, e = Phi->getNumIncomingValues(); i != e; i++)
+      Maybe |= maybeHeapPtr(Phi->getIncomingValue(i), Visited);
+    return Maybe;
+  }
+  case Instruction::Select: {
+    SelectInst *SI = cast<SelectInst>(V);
+    return maybeHeapPtr(SI->getTrueValue(), Visited)
+      || maybeHeapPtr(SI->getFalseValue(), Visited);
+  }
+  default:
+    assert(0);
+  }
+}
+
 // TODO: complete vectorization support
 void LazySanVisitor::visitStoreInst(StoreInst &I) {
   Value *Ptr = I.getValueOperand();
+  Value *Lhs = I.getPointerOperand();
   Type *Ty = Ptr->getType();
   Type *ScalarTy = Ty->getScalarType();
   assert(!Ty->isVectorTy() && "vectorization support not yet complete!");
+  bool NeedInc = true;
   // TODO: make sure that we are not skipping any instructions we need to handle
   // and skipping those we don't
   if (!ScalarTy->isPointerTy() && !isa<PtrToIntInst>(Ptr)) {
+    // Ptr is probably not a pointer. Don't need to increase refcnt
+    NeedInc = false;
     // Here we search for possible union type store.
     // We need this because pointer may be overwritten by non-pointer
     // (and we have to decrease refcnt in that case)
-    Value *Lhs = I.getPointerOperand();
     SmallPtrSet<Value *, 8> Visited;
     if (!shouldInstrument(Lhs, Visited)) {
       //assert(!isPointerOperand(Ptr));   // double check with dangsan
@@ -400,33 +469,23 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
     }
   }
 
-  // Even if RHS is statically known to be null or not a heap pointer, etc,
-  // we won't be saving much since we still need to decrease the refcnt of the
-  // previously pointed object, unless we also know that we don't have to.
-  // TODO: determine if the store is the first store to the location
-  /*
-  if (isa<FunctionType>(cast<PointerType>(Ty)->getElementType())
-      || isStackPointer(Ptr) || isGlobalPointer(Ptr) || isa<ConstantPointerNull>(Ptr));
-  */
-  if (isSameLoadStore(I.getPointerOperand(), Ptr))
+  if (isSameLoadStore(Lhs, Ptr))
     return;
 
+  // TODO: determine if the store is the first store to the location
+  SmallPtrSet<Value *, 8> Visited;
+  if (NeedInc && !maybeHeapPtr(Ptr, Visited))
+    NeedInc = false;
+
   IRBuilder<> Builder(&I);
-  Value *DstCast
-    = Builder.CreateBitOrPointerCast(I.getPointerOperand(),
-                                     Type::getInt8PtrTy(I.getContext()));
-  const DataLayout &DL = I.getModule()->getDataLayout();
+  Value *DstCast =
+    Builder.CreateBitOrPointerCast(Lhs, Type::getInt8PtrTy(I.getContext()));
   Value *SrcCast;
-  if (Ty->isPointerTy() ||
-      (Ty->isIntegerTy()
-       && Ty->getScalarSizeInBits() == DL.getPointerSizeInBits())) {
+  if (NeedInc)
     SrcCast =
-      Builder.CreateBitOrPointerCast(Ptr,
-                                     Type::getInt8PtrTy(I.getContext()));
-  } else {
-    //assert(Ty->isDoubleTy());
+      Builder.CreateBitOrPointerCast(Ptr, Type::getInt8PtrTy(I.getContext()));
+  else
     SrcCast = Constant::getNullValue(Builder.getInt8PtrTy());
-  }
   Builder.CreateCall(IncDecRC, {SrcCast, DstCast});
 }
 
