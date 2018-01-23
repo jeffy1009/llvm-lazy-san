@@ -29,8 +29,8 @@ LazySanVisitor::LazySanVisitor(Module &M, const EQTDDataStructures *dsa,
   : DSA(dsa), AA(aa) {
   DecRC = M.getFunction("ls_dec_refcnt");
   IncRC = M.getFunction("ls_inc_refcnt");
-  IncDecRC = M.getFunction("ls_incdec_refcnt");
-  IncDecRC2 = M.getFunction("ls_incdec_refcnt2");
+  IncDecRC = M.getFunction("ls_incdec_refcnt_inline");
+  IncDecRC_noinc = M.getFunction("ls_incdec_refcnt_noinc_inline");
   ClearPtrLog = M.getFunction("ls_clear_ptrlog");
   CpyPtrLog = M.getFunction("ls_copy_ptrlog");
   CheckPtrLog = M.getFunction("ls_check_ptrlog");
@@ -481,12 +481,13 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
   Value *DstCast =
     Builder.CreateBitOrPointerCast(Lhs, Type::getInt8PtrTy(I.getContext()));
   Value *SrcCast;
-  if (NeedInc)
+  if (NeedInc) {
     SrcCast =
       Builder.CreateBitOrPointerCast(Ptr, Type::getInt8PtrTy(I.getContext()));
-  else
-    SrcCast = Constant::getNullValue(Builder.getInt8PtrTy());
-  Builder.CreateCall(IncDecRC, {SrcCast, DstCast});
+    Builder.CreateCall(IncDecRC, {SrcCast, DstCast});
+  } else {
+    Builder.CreateCall(IncDecRC_noinc, {DstCast});
+  }
 }
 
 void LazySanVisitor::handleLifetimeIntr(IntrinsicInst *I) {
@@ -638,7 +639,7 @@ bool LazySan::runOnFunction(Function &F) {
 
 // IMPORTANT: make sure these include all functions in the static lib
 static char const *LSFuncs[] = {
-  "atexit_hook", "init_lazysan", "sys_mmap", "get_obj_info", "delete_obj_info", "ls_free", "alloc_common", "alloc_obj_info", "free_common", "ls_dec_refcnt", "ls_inc_refcnt", "ls_incdec_refcnt", "ls_incdec_refcnt2", "ls_clear_ptrlog", "ls_copy_ptrlog", "ls_incdec_copy_ptrlog", "ls_incdec_move_ptrlog", "ls_check_ptrlog", "ls_inc_ptrlog", "ls_dec_ptrlog", "ls_dec_clear_ptrlog", "malloc_wrap", "calloc_wrap", "realloc_wrap", "free_wrap", "_Znwm_wrap", "_Znam_wrap", "_ZdlPv_wrap", "_ZdaPv_wrap",
+  "atexit_hook", "init_lazysan", "sys_mmap", "get_obj_info", "delete_obj_info", "ls_free", "alloc_common", "alloc_obj_info", "free_common", "ls_dec_refcnt", "ls_inc_refcnt", "ls_incdec_refcnt_noinc", "ls_incdec_refcnt_noinc_inline", "ls_incdec_refcnt", "ls_incdec_refcnt_inline", "ls_clear_ptrlog", "ls_copy_ptrlog", "ls_incdec_copy_ptrlog", "ls_incdec_move_ptrlog", "ls_check_ptrlog", "ls_inc_ptrlog", "ls_dec_ptrlog", "ls_dec_clear_ptrlog", "malloc_wrap", "calloc_wrap", "realloc_wrap", "free_wrap", "_Znwm_wrap", "_Znam_wrap", "_ZdlPv_wrap", "_ZdaPv_wrap",
   "metaset_4", "metaset_8", "metaget_4", "metaget_8",
   "RBTreeCompare", "RBTreeCreate", "LeftRotate", "RightRotate", "TreeInsertHelp", "RBTreeInsert", "TreeSuccessor", "InorderTreePrint", "TreeDestHelper", "RBTreeDestroy", "RBTreePrint", "RBExactQuery", "RBDeleteFixUp", "RBDelete"
 };
