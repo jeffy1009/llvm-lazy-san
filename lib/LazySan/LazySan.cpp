@@ -415,7 +415,8 @@ bool LazySanVisitor::maybeHeapPtr(Value *V, SmallPtrSetImpl<Value *> &Visited) {
   case Instruction::PtrToInt:
     return true;
   case Instruction::Load: {
-    assert(!AA->pointsToConstantMemory(cast<LoadInst>(V)->getOperand(0)));
+    if (AA->pointsToConstantMemory(cast<LoadInst>(V)->getOperand(0)))
+      return false;
     return true;
   }
   case Instruction::BitCast:
