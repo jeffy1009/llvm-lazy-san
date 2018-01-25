@@ -1,6 +1,7 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Analysis/VectorUtils.h"
+#include "llvm/IR/CFG.h"
 #include "llvm/IR/GetElementPtrTypeIterator.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Type.h"
@@ -26,8 +27,9 @@ EnableDSA("lazysan-enable-dsa",
              cl::init(false));
 
 LazySanVisitor::LazySanVisitor(Module &M, const EQTDDataStructures *dsa,
-                               AliasAnalysis *aa)
-  : DSA(dsa), AA(aa) {
+                               AliasAnalysis *aa, DominatorTree *dt,
+                               LoopInfo *li)
+  : DSA(dsa), AA(aa), DT(dt), LI(li) {
   DecRC = M.getFunction("ls_dec_refcnt");
   IncRC = M.getFunction("ls_inc_refcnt");
   IncDecRC = M.getFunction("ls_incdec_refcnt");
@@ -273,10 +275,21 @@ void LazySanVisitor::visitAllocaInst(AllocaInst &I) {
   if (hasLifetimeMarkers(&I))
     return;
 
-  // TODO: handle allocas not in the entry block (in gcc)
-  if (I.getParent() != &I.getFunction()->getEntryBlock())
-    return;
   BasicBlock *BB = I.getParent();
+  Type *Ty = I.getType();
+  // Allocas not in the entry block (in gcc)
+  if (BB != &I.getFunction()->getEntryBlock()) {
+    // TODO: handle possible char buffer type holding pointers.
+    if (Ty->getPointerElementType()->isIntegerTy(8))
+      return;
+    // TODO; handle allocas in loops
+    if (LI->getLoopFor(BB))
+      return;;
+  }
+
+  assert((!I.isArrayAllocation() && isa<ConstantInt>(I.getArraySize()))
+         || (I.isArrayAllocation() && !isa<ConstantInt>(I.getArraySize())));
+
   Instruction *InsertPos = I.getNextNode();
   while (isa<AllocaInst>(InsertPos) || isa<DbgInfoIntrinsic>(InsertPos))
     InsertPos = InsertPos->getNextNode();
@@ -290,7 +303,6 @@ void LazySanVisitor::visitAllocaInst(AllocaInst &I) {
 
   Value *Size = Builder.getInt64(getAllocaSizeInBytes(&I));
   if (I.isArrayAllocation()) {
-    assert(!I.isStaticAlloca());
     Size =
       Builder.CreateMul(Builder.CreateIntCast(I.getArraySize(),
                                               Builder.getInt64Ty(), false), Size);
@@ -598,16 +610,49 @@ void LazySanVisitor::visitCallSite(CallSite CS) {
     return handleMemTransfer(cast<CallInst>(&I));
 }
 
+static bool isReachable(BasicBlock *BB, BasicBlock *DestBB,
+                        SmallPtrSetImpl<BasicBlock*> &Visited) {
+  if (!Visited.insert(BB).second)
+    return false;
+
+  for (BasicBlock *Succ : successors(BB))
+    if (Succ==DestBB || isReachable(Succ, DestBB, Visited))
+      return true;
+
+  return false;
+}
+
 void LazySanVisitor::visitReturnInst(ReturnInst &I) {
   IRBuilder<> Builder(&I);
 
+  BasicBlock *RetBB = I.getParent();
   for (AllocaInst *AI : AllocaInsts) {
     Value *Size = AI->isArrayAllocation() ?
       DynamicAllocaSizeMap[AI] : Builder.getInt64(getAllocaSizeInBytes(AI));
-    handleScopeExit(Builder, AI, Size);
+
+    BasicBlock *AllocaBB = AI->getParent();
+    if (DT->dominates(AllocaBB, RetBB)) {
+      handleScopeExit(Builder, AI, Size);
+      continue;
+    }
+
+    for (BasicBlock *BB : predecessors(RetBB)) {
+      SmallPtrSet<BasicBlock *, 16> Visited;
+      if (!isReachable(AllocaBB, BB, Visited))
+        continue;
+      // TODO: handle the case when AllocaBB does not dominate BB..
+      if (!DT->dominates(AllocaBB, BB))
+        continue;
+      assert(!LI->getLoopFor(BB));
+      Builder.SetInsertPoint(BB->getTerminator());
+      // TODO: this gives run-time error. fix it.
+      //handleScopeExit(Builder, AI, Size);
+    }
   }
 
   for (AllocaInst *AI : AllocaInstsCheck) {
+    if (!DT->dominates(AI->getParent(), RetBB))
+      continue;
     Value *Size = AI->isArrayAllocation() ?
       DynamicAllocaSizeMap[AI] : Builder.getInt64(getAllocaSizeInBytes(AI));
     handleScopeExit(Builder, AI, Size, /* Check = */ true);
@@ -625,7 +670,9 @@ LazySan::LazySan() : ModulePass(ID) {
 bool LazySan::runOnFunction(Function &F) {
   LazySanVisitor LSV(*F.getParent(),
                      EnableDSA ? &getAnalysis<EQTDDataStructures>() : nullptr,
-                     &getAnalysis<AAResultsWrapperPass>(F).getAAResults());
+                     &getAnalysis<AAResultsWrapperPass>(F).getAAResults(),
+                     &getAnalysis<DominatorTreeWrapperPass>(F).getDomTree(),
+                     &getAnalysis<LoopInfoWrapperPass>(F).getLoopInfo());
 
   LSV.visit(F);
 
@@ -703,5 +750,7 @@ void LazySan::getAnalysisUsage(AnalysisUsage &AU) const {
   if (EnableDSA)
     AU.addRequired<EQTDDataStructures>();
   AU.addRequired<AAResultsWrapperPass>();
+  AU.addRequired<DominatorTreeWrapperPass>();
+  AU.addRequired<LoopInfoWrapperPass>();
   AU.setPreservesCFG();
 }

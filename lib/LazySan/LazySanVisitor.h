@@ -1,8 +1,11 @@
 #ifndef LLVM_LAZYSAN_LAZYSANVISITOR_H
 #define LLVM_LAZYSAN_LAZYSANVISITOR_H
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Analysis/AliasAnalysis.h"
+#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/IR/Dominators.h"
 #include "llvm/IR/InstVisitor.h"
 #include "llvm/IR/IRBuilder.h"
 
@@ -14,7 +17,10 @@ namespace llvm {
 class LazySanVisitor : public InstVisitor<LazySanVisitor> {
   const EQTDDataStructures *DSA;
   AliasAnalysis *AA;
+  DominatorTree *DT;
+  LoopInfo *LI;
 
+  DenseMap<AllocaInst *, Value *> DynamicAllocaSizeMap;
   // allocas to be processed at return
   SmallVector<AllocaInst *, 16> AllocaInsts;
   // allocas to be checked when -enable-check is on
@@ -25,7 +31,8 @@ class LazySanVisitor : public InstVisitor<LazySanVisitor> {
   Function *DecAndClearPtrLog, *IncDecCpyPtrLog, *IncDecMovePtrLog;
 
  public:
-  LazySanVisitor(Module &M, const EQTDDataStructures *dsa, AliasAnalysis *aa);
+  LazySanVisitor(Module &M, const EQTDDataStructures *dsa, AliasAnalysis *aa,
+                 DominatorTree *dt, LoopInfo *li);
 
   void visitAllocaInst(AllocaInst &I);
   void visitStoreInst(StoreInst &I);
