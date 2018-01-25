@@ -57,7 +57,6 @@ class LazySanVisitor : public InstVisitor<LazySanVisitor> {
   bool maybeHeapPtr(Value *V, SmallPtrSetImpl<Value *> &Visited);
 
   void handleLifetimeIntr(IntrinsicInst *I);
-  void handleDeallocators(IRBuilder<> &B, CallInst *I, Function *Func);
   void handleMemSet(CallInst *I);
   void handleMemTransfer(CallInst *I);
 

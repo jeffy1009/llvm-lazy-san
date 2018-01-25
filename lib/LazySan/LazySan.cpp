@@ -1,3 +1,4 @@
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Analysis/VectorUtils.h"
 #include "llvm/IR/GetElementPtrTypeIterator.h"
@@ -557,19 +558,6 @@ void LazySanVisitor::handleMemTransfer(CallInst *I) {
     Builder.CreateCall(IncDecMovePtrLog, {DestCast, SrcCast, Size});
 }
 
-// Tell deallocators that we don't need to decrease refcnts if we know that the
-// object does not have any pointer field
-void LazySanVisitor::handleDeallocators(IRBuilder<> &B, CallInst *I,
-                                        Function *Func) {
-  Value *Ptr = I->getArgOperand(0);
-  Value *Strip = Ptr->stripPointerCasts();
-  CallInst *New =
-    B.CreateCall(Func, {Ptr, B.getInt32(checkTy(Strip->getType()))});
-  if (I->isTailCall()) New->setTailCall();
-  I->dropAllReferences();
-  I->eraseFromParent();
-}
-
 void LazySanVisitor::visitCallSite(CallSite CS) {
   Instruction &I = *CS.getInstruction();
   Module *M = I.getModule();
@@ -583,28 +571,6 @@ void LazySanVisitor::visitCallSite(CallSite CS) {
       return handleLifetimeIntr(Intr);
 
   IRBuilder<> Builder(&I);
-
-  if (CalledFunc->getName().equals("malloc"))
-    return CS.setCalledFunction(M->getFunction("malloc_wrap"));
-  if (CalledFunc->getName().equals("calloc"))
-    return CS.setCalledFunction(M->getFunction("calloc_wrap"));
-  if (CalledFunc->getName().equals("realloc"))
-    return CS.setCalledFunction(M->getFunction("realloc_wrap"));
-  if (CalledFunc->getName().equals("free"))
-    return handleDeallocators(Builder, cast<CallInst>(&I),
-                              M->getFunction("free_wrap"));
-
-  // C++ allocators & deallocators
-  if (CalledFunc->getName().equals("_Znwm") && M->getFunction("_Znwm")->empty())
-    return CS.setCalledFunction(M->getFunction("_Znwm_wrap"));
-  if (CalledFunc->getName().equals("_Znam") && M->getFunction("_Znam")->empty())
-    return CS.setCalledFunction(M->getFunction("_Znam_wrap"));
-  if (CalledFunc->getName().equals("_ZdlPv") && M->getFunction("_ZdlPv")->empty())
-    return handleDeallocators(Builder, cast<CallInst>(&I),
-                              M->getFunction("_ZdlPv_wrap"));
-  if (CalledFunc->getName().equals("_ZdaPv") && M->getFunction("_ZdaPv")->empty())
-    return handleDeallocators(Builder, cast<CallInst>(&I),
-                              M->getFunction("_ZdaPv_wrap"));
 
   if (isa<MemSetInst>(&I)
       || CalledFunc->getName().equals("memset"))
@@ -668,6 +634,41 @@ bool LazySan::runOnModule(Module &M) {
       continue;
 
     runOnFunction(F);
+  }
+
+  static char const *MMFuncs[] = {
+    "malloc", "calloc", "realloc", "free", "_Znwm", "_Znam", "_ZdlPv", "_ZdaPv"
+  };
+
+  // to handle indirect calls to malloc/frees
+  for (unsigned int i = 0; i < (sizeof(MMFuncs) / sizeof(MMFuncs[0])); ++i) {
+    SmallString<16> WrapName;
+    Function *Orig = M.getFunction(MMFuncs[i]);
+    if (!Orig) continue;
+    Function *Wrap = M.getFunction((Twine(MMFuncs[i])+"_wrap").toStringRef(WrapName));
+    // Need to gather users first instead of changing directly, to not mess
+    // with the iterator...
+    SmallVector<Use *, 4> Uses;
+    for (Use &U : Orig->uses()) {
+      User *Usr = U.getUser();
+      if (Instruction *Inst = dyn_cast<Instruction>(Usr)) {
+        if (isLSFunc(Inst->getFunction()->getName()))
+          continue;
+      } else {
+        Constant *C = cast<Constant>(Usr);
+        for (User *CU : C->users())
+          assert(!isLSFunc(cast<Instruction>(CU)->getFunction()->getName()));
+      }
+      Uses.push_back(&U);
+    }
+
+    for (Use *U : Uses) {
+      User *Usr = U->getUser();
+      if (isa<Instruction>(Usr))
+        Usr->replaceUsesOfWith(Orig, Wrap);
+      else
+        cast<Constant>(Usr)->handleOperandChange(Orig, Wrap, U);
+    }
   }
 
   return true;
