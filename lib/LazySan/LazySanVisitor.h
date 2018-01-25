@@ -17,6 +17,8 @@ class LazySanVisitor : public InstVisitor<LazySanVisitor> {
 
   // allocas to be processed at return
   SmallVector<AllocaInst *, 16> AllocaInsts;
+  // allocas to be checked when -enable-check is on
+  SmallVector<AllocaInst *, 16> AllocaInstsCheck;
 
   Function *DecRC, *IncRC, *IncDecRC, *IncDecRC_noinc;
   Function *ClearPtrLog, *CpyPtrLog, *CheckPtrLog, *IncPtrLog, *DecPtrLog;
@@ -50,7 +52,8 @@ class LazySanVisitor : public InstVisitor<LazySanVisitor> {
                 Value *V, bool ShouldInc);
 
   void handleScopeEntry(IRBuilder<> &B, Value *Dest, Value *Size);
-  void handleScopeExit(IRBuilder<> &B, Value *Dest, Value *Size);
+  void handleScopeExit(IRBuilder<> &B, Value *Dest, Value *Size,
+                       bool Check = false);
 
   bool shouldInstrument(Value *V, SmallPtrSetImpl<Value *> &Visited,
                         bool LookForUnion = false);

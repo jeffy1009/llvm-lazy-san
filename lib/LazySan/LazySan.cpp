@@ -249,10 +249,10 @@ void LazySanVisitor::handleScopeEntry(IRBuilder<> &B, Value *Dest,
 }
 
 void LazySanVisitor::handleScopeExit(IRBuilder<> &B, Value *Dest,
-                                     Value *Size) {
+                                     Value *Size, bool Check) {
   Value *Cast = B.CreateBitCast(Dest, Type::getInt8PtrTy(Dest->getContext()));
   // handleTy(&I, nullptr, Dest, false);
-  B.CreateCall(DecPtrLog, {Cast, Size});
+  B.CreateCall(Check? CheckPtrLog : DecPtrLog, {Cast, Size});
 }
 
 // Code copied from lib/Transforms/Instrumentation/AddressSanitizer.cpp
@@ -289,6 +289,8 @@ void LazySanVisitor::visitAllocaInst(AllocaInst &I) {
   // But we could ignore those objects when we decrease reference counts
   if (checkTy(I.getType()))
     AllocaInsts.push_back(&I);
+  else if (EnableChecks)
+    AllocaInstsCheck.push_back(&I);
 }
 
 static bool isUnionTy(Type *Ty) {
@@ -517,6 +519,8 @@ void LazySanVisitor::handleLifetimeIntr(IntrinsicInst *I) {
     handleScopeEntry(Builder, Dest, Size);
   else if (checkTy(Dest->getType()))
     handleScopeExit(Builder, Dest, Size);
+  else if (EnableChecks)
+    handleScopeExit(Builder, Dest, Size, /* Check = */ true);
 }
 
 void LazySanVisitor::handleMemSet(CallInst *I) {
@@ -560,7 +564,6 @@ void LazySanVisitor::handleMemTransfer(CallInst *I) {
 
 void LazySanVisitor::visitCallSite(CallSite CS) {
   Instruction &I = *CS.getInstruction();
-  Module *M = I.getModule();
   Function *CalledFunc = CS.getCalledFunction();
   if (!CalledFunc) // skip indirect calls
     return;
@@ -587,6 +590,10 @@ void LazySanVisitor::visitReturnInst(ReturnInst &I) {
 
   for (AllocaInst *AI : AllocaInsts)
     handleScopeExit(Builder, AI, Builder.getInt64(getAllocaSizeInBytes(AI)));
+
+  for (AllocaInst *AI : AllocaInstsCheck)
+    handleScopeExit(Builder, AI, Builder.getInt64(getAllocaSizeInBytes(AI)),
+                    /* Check = */ true);
 }
 
 char LazySan::ID = 0;
