@@ -276,10 +276,6 @@ void LazySanVisitor::visitAllocaInst(AllocaInst &I) {
   // TODO: handle allocas not in the entry block (in gcc)
   if (I.getParent() != &I.getFunction()->getEntryBlock())
     return;
-  // assert(I.getParent() == &I.getFunction()->getEntryBlock()
-  //        && "alloca not in the entry basic block!");
-  // assert(I.isStaticAlloca());
-  // assert(!I.isArrayAllocation());
   BasicBlock *BB = I.getParent();
   Instruction *InsertPos = I.getNextNode();
   while (isa<AllocaInst>(InsertPos) || isa<DbgInfoIntrinsic>(InsertPos))
@@ -292,11 +288,20 @@ void LazySanVisitor::visitAllocaInst(AllocaInst &I) {
   // complain if we don't do this.
   setNearestDebugLocation(Builder, &I);
 
+  Value *Size = Builder.getInt64(getAllocaSizeInBytes(&I));
+  if (I.isArrayAllocation()) {
+    assert(!I.isStaticAlloca());
+    Size =
+      Builder.CreateMul(Builder.CreateIntCast(I.getArraySize(),
+                                              Builder.getInt64Ty(), false), Size);
+    DynamicAllocaSizeMap[&I] = Size;
+  }
+
   // We clear ptrlog regardless of alloca type. We probably could do some
   // optimization to ignore objects without any pointer type member,
   // but for simplicity of design and easy debugging, just clear it all.
   // TODO: merge ptrlog clearing in the backend!
-  handleScopeEntry(Builder, &I, Builder.getInt64(getAllocaSizeInBytes(&I)));
+  handleScopeEntry(Builder, &I, Size);
 
   // But we could ignore those objects when we decrease reference counts
   if (checkTy(I.getType()))
@@ -596,12 +601,17 @@ void LazySanVisitor::visitCallSite(CallSite CS) {
 void LazySanVisitor::visitReturnInst(ReturnInst &I) {
   IRBuilder<> Builder(&I);
 
-  for (AllocaInst *AI : AllocaInsts)
-    handleScopeExit(Builder, AI, Builder.getInt64(getAllocaSizeInBytes(AI)));
+  for (AllocaInst *AI : AllocaInsts) {
+    Value *Size = AI->isArrayAllocation() ?
+      DynamicAllocaSizeMap[AI] : Builder.getInt64(getAllocaSizeInBytes(AI));
+    handleScopeExit(Builder, AI, Size);
+  }
 
-  for (AllocaInst *AI : AllocaInstsCheck)
-    handleScopeExit(Builder, AI, Builder.getInt64(getAllocaSizeInBytes(AI)),
-                    /* Check = */ true);
+  for (AllocaInst *AI : AllocaInstsCheck) {
+    Value *Size = AI->isArrayAllocation() ?
+      DynamicAllocaSizeMap[AI] : Builder.getInt64(getAllocaSizeInBytes(AI));
+    handleScopeExit(Builder, AI, Size, /* Check = */ true);
+  }
 }
 
 char LazySan::ID = 0;
