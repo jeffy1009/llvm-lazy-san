@@ -263,6 +263,11 @@ static uint64_t getAllocaSizeInBytes(AllocaInst *AI) {
   return SizeInBytes;
 }
 
+static void setNearestDebugLocation(IRBuilder<> &B, Instruction *InstDL) {
+  while (!InstDL->getDebugLoc()) InstDL = InstDL->getNextNode();
+  B.SetCurrentDebugLocation(InstDL->getDebugLoc());
+}
+
 void LazySanVisitor::visitAllocaInst(AllocaInst &I) {
   // Allocas having lifetime markders will be processed at the lifetime markers
   if (hasLifetimeMarkers(&I))
@@ -275,15 +280,22 @@ void LazySanVisitor::visitAllocaInst(AllocaInst &I) {
   //        && "alloca not in the entry basic block!");
   // assert(I.isStaticAlloca());
   // assert(!I.isArrayAllocation());
+  BasicBlock *BB = I.getParent();
+  Instruction *InsertPos = I.getNextNode();
+  while (isa<AllocaInst>(InsertPos) || isa<DbgInfoIntrinsic>(InsertPos))
+    InsertPos = InsertPos->getNextNode();
+  assert(InsertPos->getParent()==BB);
+
+  IRBuilder<> Builder(InsertPos);
+
+  // Allocas may not have !dbg metadata. Find nearest one. LLVM will sometimes
+  // complain if we don't do this.
+  setNearestDebugLocation(Builder, &I);
 
   // We clear ptrlog regardless of alloca type. We probably could do some
   // optimization to ignore objects without any pointer type member,
   // but for simplicity of design and easy debugging, just clear it all.
   // TODO: merge ptrlog clearing in the backend!
-  Instruction *InsertPos = I.getNextNode();
-  while (isa<AllocaInst>(InsertPos))
-    InsertPos = InsertPos->getNextNode();
-  IRBuilder<> Builder(InsertPos);
   handleScopeEntry(Builder, &I, Builder.getInt64(getAllocaSizeInBytes(&I)));
 
   // But we could ignore those objects when we decrease reference counts
@@ -485,11 +497,7 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
     NeedInc = false;
 
   IRBuilder<> Builder(&I);
-  if (!I.getDebugLoc()) {
-    Instruction *InstDL = I.getNextNode();
-    while (!InstDL->getDebugLoc()) InstDL = InstDL->getNextNode();
-    Builder.SetCurrentDebugLocation(InstDL->getDebugLoc());
-  }
+  setNearestDebugLocation(Builder, &I);
 
   Value *DstCast =
     Builder.CreateBitOrPointerCast(Lhs, Type::getInt8PtrTy(I.getContext()));
