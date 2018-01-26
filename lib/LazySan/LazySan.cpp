@@ -483,7 +483,8 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
   Value *Lhs = I.getPointerOperand();
   Type *Ty = Ptr->getType();
   Type *ScalarTy = Ty->getScalarType();
-  assert(!Ty->isVectorTy() && "vectorization support not yet complete!");
+  assert(!(Ty->isVectorTy() && !ScalarTy->isFloatingPointTy())
+         && "vectorization support not yet complete!");
   bool NeedInc = true;
   // TODO: make sure that we are not skipping any instructions we need to handle
   // and skipping those we don't
@@ -720,13 +721,16 @@ static bool isLSFunc(StringRef name) {
 }
 
 bool LazySan::runOnModule(Module &M) {
-  dbgs() << "Hello World!!!\n";
+  dbgs() << "LazySan Instrumentation Start\n";
+  DEBUG(dbgs() << "Instrumented functions: ");
   for (Function &F : M.functions()) {
     if (F.empty() || isLSFunc(F.getName()))
       continue;
 
+    DEBUG(dbgs() << F.getName() << ' ');
     runOnFunction(F);
   }
+  DEBUG(dbgs() << '\n');
 
   static char const *MMFuncs[] = {
     "malloc", "calloc", "realloc", "free", "_Znwm", "_Znam", "_ZdlPv", "_ZdaPv"
@@ -757,11 +761,18 @@ bool LazySan::runOnModule(Module &M) {
       }
 
       Constant *C = cast<Constant>(Usr);
+      SmallVector<User *, 32> CUsers;
       for (User *CU : C->users()) {
         Instruction *CUI = cast<Instruction>(CU);
         if (!isLSFunc(CUI->getFunction()->getName()))
           continue;
         // static lib func should not be effected
+        CUsers.push_back(CU);
+      }
+
+      // Again, do this separately here to NOT mess with iterator..
+      for (User *CU : CUsers) {
+        Instruction *CUI = cast<Instruction>(CU);
         Instruction *New = cast<ConstantExpr>(C)->getAsInstruction();
         New->insertBefore(CUI);
         CUI->replaceUsesOfWith(C, New);
@@ -770,6 +781,7 @@ bool LazySan::runOnModule(Module &M) {
     }
   }
 
+  dbgs() << "LazySan Instrumentation End\n";
   return true;
 }
 
