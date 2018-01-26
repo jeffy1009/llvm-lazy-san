@@ -419,6 +419,8 @@ static bool visitConstant(Constant *C) {
   default:
     assert(0);
   }
+
+  return false;
 }
 
 bool LazySanVisitor::maybeHeapPtr(Value *V, SmallPtrSetImpl<Value *> &Visited) {
@@ -432,7 +434,7 @@ bool LazySanVisitor::maybeHeapPtr(Value *V, SmallPtrSetImpl<Value *> &Visited) {
   if (isa<Argument>(V))
     return true;
 
-  if (isa<ConstantPointerNull>(V) || isa<GlobalValue>(V)
+  if (isa<ConstantPointerNull>(V) || isa<GlobalValue>(V) || isa<UndefValue>(V)
       || AA->pointsToConstantMemory(V))
     return false;
 
@@ -444,6 +446,7 @@ bool LazySanVisitor::maybeHeapPtr(Value *V, SmallPtrSetImpl<Value *> &Visited) {
     return false;
   case Instruction::Call:
   case Instruction::IntToPtr:
+  case Instruction::Invoke:
   case Instruction::PtrToInt:
     return true;
   case Instruction::Load: {
@@ -470,6 +473,8 @@ bool LazySanVisitor::maybeHeapPtr(Value *V, SmallPtrSetImpl<Value *> &Visited) {
   default:
     assert(0);
   }
+
+  return false;
 }
 
 // TODO: complete vectorization support
@@ -528,14 +533,29 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
   }
 }
 
+static void findAllocaInst(Value *V, AllocaInst *&Alloca,
+                           SmallPtrSetImpl<Value *> &Visited) {
+  if (!Visited.insert(V).second)
+    return;
+
+  V = V->stripPointerCasts();
+  if (AllocaInst *AI = dyn_cast<AllocaInst>(V)) {
+    if (!Alloca) Alloca = AI;
+    else assert(Alloca==AI);
+  } else {
+    // We see phi nodes in some cases.
+    PHINode *Phi = cast<PHINode>(V);
+    for (unsigned i = 0, e = Phi->getNumIncomingValues(); i != e; i++)
+      findAllocaInst(Phi->getIncomingValue(i), Alloca, Visited);
+  }
+}
+
 void LazySanVisitor::handleLifetimeIntr(IntrinsicInst *I) {
   IRBuilder<> Builder(I);
-  Value *Arg = I->getArgOperand(1);
-  // encountered PHI node in gcc..
-  if (PHINode *Phi = dyn_cast<PHINode>(Arg))
-    Arg = Phi->getIncomingValue(0);
-  AllocaInst *Dest = cast<AllocaInst>(Arg->stripPointerCasts());
-  assert(!Dest->isArrayAllocation());
+  AllocaInst *Dest = nullptr;
+  SmallPtrSet<Value *, 8> Visited;
+  findAllocaInst(I->getArgOperand(1), Dest, Visited);
+  assert(Dest && !Dest->isArrayAllocation());
 
   // We clear ptrlog for all types but optimize when we decrease refcnts.
   // (see comments in visitAllocaInst)
@@ -716,30 +736,37 @@ bool LazySan::runOnModule(Module &M) {
   for (unsigned int i = 0; i < (sizeof(MMFuncs) / sizeof(MMFuncs[0])); ++i) {
     SmallString<16> WrapName;
     Function *Orig = M.getFunction(MMFuncs[i]);
-    if (!Orig) continue;
+    if (!Orig || !Orig->empty()) continue;
     Function *Wrap = M.getFunction((Twine(MMFuncs[i])+"_wrap").toStringRef(WrapName));
     // Need to gather users first instead of changing directly, to not mess
     // with the iterator...
-    SmallVector<Use *, 4> Uses;
+    SmallVector<Use *, 32> Uses;
     for (Use &U : Orig->uses()) {
       User *Usr = U.getUser();
-      if (Instruction *Inst = dyn_cast<Instruction>(Usr)) {
+      if (Instruction *Inst = dyn_cast<Instruction>(Usr))
         if (isLSFunc(Inst->getFunction()->getName()))
           continue;
-      } else {
-        Constant *C = cast<Constant>(Usr);
-        for (User *CU : C->users())
-          assert(!isLSFunc(cast<Instruction>(CU)->getFunction()->getName()));
-      }
       Uses.push_back(&U);
     }
 
     for (Use *U : Uses) {
       User *Usr = U->getUser();
-      if (isa<Instruction>(Usr))
+      if (isa<Instruction>(Usr)) {
         Usr->replaceUsesOfWith(Orig, Wrap);
-      else
-        cast<Constant>(Usr)->handleOperandChange(Orig, Wrap, U);
+        continue;
+      }
+
+      Constant *C = cast<Constant>(Usr);
+      for (User *CU : C->users()) {
+        Instruction *CUI = cast<Instruction>(CU);
+        if (!isLSFunc(CUI->getFunction()->getName()))
+          continue;
+        // static lib func should not be effected
+        Instruction *New = cast<ConstantExpr>(C)->getAsInstruction();
+        New->insertBefore(CUI);
+        CUI->replaceUsesOfWith(C, New);
+      }
+      C->handleOperandChange(Orig, Wrap, U);
     }
   }
 
