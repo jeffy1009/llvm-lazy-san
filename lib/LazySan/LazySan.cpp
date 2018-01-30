@@ -2,6 +2,8 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Analysis/VectorUtils.h"
 #include "llvm/IR/CFG.h"
+#include "llvm/IR/DebugInfo.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/GetElementPtrTypeIterator.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Type.h"
@@ -501,6 +503,11 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
     }
     //assert(!isPointerOperand(Ptr));
   }
+
+  MDNode *MDN = I.getMetadata(LLVMContext::MD_dbg);
+  const DILocation *Loc = dyn_cast_or_null<DILocation>(MDN);
+  if (!Loc || Loc->getFilename().startswith("/usr"))
+    return;
 
   if (EnableDSA) {
     DSGraph *G = DSA->getDSGraph(*I.getFunction());
