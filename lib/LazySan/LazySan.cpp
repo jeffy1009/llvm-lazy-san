@@ -31,7 +31,7 @@ EnableDSA("lazysan-enable-dsa",
 LazySanVisitor::LazySanVisitor(Module &M, const EQTDDataStructures *dsa,
                                AliasAnalysis *aa, DominatorTree *dt,
                                LoopInfo *li)
-  : DSA(dsa), AA(aa), DT(dt), LI(li) {
+  : DSA(dsa), AA(aa), DT(dt), LI(li), HandleDynamicAlloca(false) {
   DecRC = M.getFunction("ls_dec_refcnt");
   IncRC = M.getFunction("ls_inc_refcnt");
   IncDecRC = M.getFunction("ls_incdec_refcnt");
@@ -41,6 +41,7 @@ LazySanVisitor::LazySanVisitor(Module &M, const EQTDDataStructures *dsa,
   CheckPtrLog = M.getFunction("ls_check_ptrlog");
   IncPtrLog = M.getFunction("ls_inc_ptrlog");
   DecPtrLog = M.getFunction("ls_dec_ptrlog");
+  DecPtrLogAddr = M.getFunction("ls_dec_ptrlog_addr");
   DecAndClearPtrLog = M.getFunction("ls_dec_clear_ptrlog");
   IncDecCpyPtrLog = M.getFunction("ls_incdec_copy_ptrlog");
   IncDecMovePtrLog = M.getFunction("ls_incdec_move_ptrlog");
@@ -279,14 +280,18 @@ void LazySanVisitor::visitAllocaInst(AllocaInst &I) {
 
   BasicBlock *BB = I.getParent();
   Type *Ty = I.getType();
+
   // Allocas not in the entry block (in gcc)
-  if (BB != &I.getFunction()->getEntryBlock()) {
+  if (!I.isStaticAlloca()) {
+    DEBUG(dbgs() << "Found dynamic alloca:" << I);
     // TODO: handle possible char buffer type holding pointers.
     if (Ty->getPointerElementType()->isIntegerTy(8))
       return;
-    // TODO; handle allocas in loops
-    if (LI->getLoopFor(BB))
-      return;;
+
+    if (checkTy(Ty))
+      HandleDynamicAlloca = true;
+
+    return;
   }
 
   assert((!I.isArrayAllocation() && isa<ConstantInt>(I.getArraySize()))
@@ -673,34 +678,19 @@ void LazySanVisitor::visitReturnInst(ReturnInst &I) {
   for (AllocaInst *AI : AllocaInsts) {
     Value *Size = AI->isArrayAllocation() ?
       DynamicAllocaSizeMap[AI] : Builder.getInt64(getAllocaSizeInBytes(AI));
-
-    BasicBlock *AllocaBB = AI->getParent();
-    if (DT->dominates(AllocaBB, RetBB)) {
-      handleScopeExit(Builder, AI, Size);
-      continue;
-    }
-
-    for (BasicBlock *BB : predecessors(RetBB)) {
-      SmallPtrSet<BasicBlock *, 16> Visited;
-      if (!isReachable(AllocaBB, BB, Visited))
-        continue;
-      // TODO: handle the case when AllocaBB does not dominate BB..
-      if (!DT->dominates(AllocaBB, BB))
-        continue;
-      assert(!LI->getLoopFor(BB));
-      Builder.SetInsertPoint(BB->getTerminator());
-      // TODO: this gives run-time error. fix it.
-      //handleScopeExit(Builder, AI, Size);
-    }
+    handleScopeExit(Builder, AI, Size);
   }
 
   for (AllocaInst *AI : AllocaInstsCheck) {
-    if (!DT->dominates(AI->getParent(), RetBB))
-      continue;
     Value *Size = AI->isArrayAllocation() ?
       DynamicAllocaSizeMap[AI] : Builder.getInt64(getAllocaSizeInBytes(AI));
     handleScopeExit(Builder, AI, Size, /* Check = */ true);
   }
+
+  if (HandleDynamicAlloca)
+    Builder.CreateCall(DecPtrLogAddr,
+                       {Constant::getNullValue(Type::getInt8PtrTy(I.getContext())),
+                           Constant::getNullValue(Type::getInt8PtrTy(I.getContext()))});
 }
 
 char LazySan::ID = 0;
@@ -731,7 +721,7 @@ bool LazySan::runOnFunction(Function &F) {
 
 // IMPORTANT: make sure these include all functions in the static lib
 static char const *LSFuncs[] = {
-  "atexit_hook", "init_lazysan", "sys_mmap", "get_obj_info", "delete_obj_info", "ls_free", "alloc_common", "alloc_obj_info", "free_common", "ls_dec_refcnt", "ls_inc_refcnt", "ls_incdec_refcnt_noinc", "ls_incdec_refcnt", "ls_clear_ptrlog", "ls_copy_ptrlog", "ls_incdec_copy_ptrlog", "ls_incdec_move_ptrlog", "ls_check_ptrlog", "ls_inc_ptrlog", "ls_dec_ptrlog", "ls_dec_clear_ptrlog", "malloc_wrap", "calloc_wrap", "realloc_wrap", "free_wrap", "_Znwm_wrap", "_Znam_wrap", "_ZdlPv_wrap", "_ZdaPv_wrap",
+  "atexit_hook", "init_lazysan", "sys_mmap", "get_obj_info", "delete_obj_info", "ls_free", "alloc_common", "alloc_obj_info", "free_common", "ls_dec_refcnt", "ls_inc_refcnt", "ls_incdec_refcnt_noinc", "ls_incdec_refcnt", "ls_clear_ptrlog", "ls_copy_ptrlog", "ls_incdec_copy_ptrlog", "ls_incdec_move_ptrlog", "ls_check_ptrlog", "ls_inc_ptrlog", "ls_dec_ptrlog_int", "ls_dec_ptrlog", "ls_dec_ptrlog_addr", "ls_dec_clear_ptrlog", "malloc_wrap", "calloc_wrap", "realloc_wrap", "free_wrap", "_Znwm_wrap", "_Znam_wrap", "_ZdlPv_wrap", "_ZdaPv_wrap",
   "metaset_4", "metaset_8", "metaget_4", "metaget_8",
   "RBTreeCompare", "RBTreeCreate", "LeftRotate", "RightRotate", "TreeInsertHelp", "RBTreeInsert", "TreeSuccessor", "InorderTreePrint", "TreeDestHelper", "RBTreeDestroy", "RBTreePrint", "RBExactQuery", "RBDeleteFixUp", "RBDelete"
 };

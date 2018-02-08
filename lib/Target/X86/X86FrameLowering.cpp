@@ -1574,6 +1574,34 @@ void X86FrameLowering::emitEpilogue(MachineFunction &MF,
         .addReg(FramePtr);
       --MBBI;
     }
+
+    bool Found = false;
+    MachineBasicBlock::iterator TmpMBBI = MBBI;
+    while (TmpMBBI != MBB.begin()) {
+      MachineInstr *DecPtrlog = --TmpMBBI;
+      if (DecPtrlog->getOpcode() == X86::CALL64pcrel32
+          && DecPtrlog->getOperand(0).isGlobal()
+          && DecPtrlog->getOperand(0).getGlobal()->getName().equals("ls_dec_ptrlog_addr")) {
+        Found = true;
+        break;
+      }
+    }
+
+    if (Found) {
+      unsigned Opc = getLEArOpcode(Uses64BitFramePtr);
+      addRegOffset(BuildMI(MBB, TmpMBBI, DL, TII.get(Opc), X86::RSI),
+                   FramePtr, false, LEAAmount);
+      --TmpMBBI;
+      Opc = (Uses64BitFramePtr ? X86::MOV64rr : X86::MOV32rr);
+      BuildMI(MBB, TmpMBBI, DL, TII.get(Opc), X86::RDI).addReg(StackPtr);
+      --TmpMBBI;
+      MachineInstr *ESI = --TmpMBBI;
+      assert(ESI->getOpcode() == X86::MOV32r0);
+      MachineInstr *EDI = --TmpMBBI;
+      assert(EDI->getOpcode() == X86::MOV32r0);
+      ESI->eraseFromParent();
+      EDI->eraseFromParent();
+    }
   } else if (NumBytes) {
     // Adjust stack pointer back: ESP += numbytes.
     emitSPUpdate(MBB, MBBI, NumBytes, /*InEpilogue=*/true);

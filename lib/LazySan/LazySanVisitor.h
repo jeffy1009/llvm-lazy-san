@@ -27,8 +27,10 @@ class LazySanVisitor : public InstVisitor<LazySanVisitor> {
   SmallVector<AllocaInst *, 16> AllocaInstsCheck;
 
   Function *DecRC, *IncRC, *IncDecRC, *IncDecRC_noinc;
-  Function *ClearPtrLog, *CpyPtrLog, *CheckPtrLog, *IncPtrLog, *DecPtrLog;
+  Function *ClearPtrLog, *CpyPtrLog, *CheckPtrLog, *IncPtrLog, *DecPtrLog, *DecPtrLogAddr;
   Function *DecAndClearPtrLog, *IncDecCpyPtrLog, *IncDecMovePtrLog;
+
+  bool HandleDynamicAlloca;
 
  public:
   LazySanVisitor(Module &M, const EQTDDataStructures *dsa, AliasAnalysis *aa,
