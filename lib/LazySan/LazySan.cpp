@@ -28,6 +28,9 @@ EnableDSA("lazysan-enable-dsa",
              cl::desc("Enable DSA in lazy-san which can slow down build time"),
              cl::init(false));
 
+static unsigned long NumStoreInstrument;
+static unsigned long NumRemovedByDSA;
+
 LazySanVisitor::LazySanVisitor(Module &M, const EQTDDataStructures *dsa,
                                AliasAnalysis *aa, DominatorTree *dt,
                                LoopInfo *li)
@@ -516,10 +519,14 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
 
   if (EnableDSA) {
     DSGraph *G = DSA->getDSGraph(*I.getFunction());
-    if (DSNode *N = G->getNodeForValue(Ptr).getNode()) {
+    DSNode *N = G->getNodeForValue(Ptr).getNode();
+    assert(isa<ConstantPointerNull>(Ptr) || !(Ty->isPointerTy() && !N)); // what about PtrToInt?
+    if (N) {
       assert(!N->isUnknownNode());
-      if (N->isCompleteNode() && !N->isHeapNode())
+      if (N->isCompleteNode() && !N->isHeapNode()) {
+        ++NumRemovedByDSA;
         return;
+      }
     }
   }
 
@@ -528,6 +535,7 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
 
   // TODO: determine if the store is the first store to the location
   SmallPtrSet<Value *, 8> Visited;
+  ++NumStoreInstrument;
   if (NeedInc && !maybeHeapPtr(Ptr, Visited))
     NeedInc = false;
 
@@ -795,6 +803,11 @@ bool LazySan::runOnModule(Module &M) {
   }
 
   dbgs() << "LazySan Instrumentation End\n";
+
+  // Print stats. Do this here to enable even on release build.
+  dbgs() << "# of stores instrumented: " << NumStoreInstrument << '\n'
+         << "# of instrumentations removed by DSA: " << NumRemovedByDSA << '\n';
+
   return true;
 }
 
