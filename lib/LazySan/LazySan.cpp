@@ -411,10 +411,15 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
     }
   }
 
+  if (Ty->isPointerTy() && Ty->getPointerElementType()->isFunctionTy())
+    return;
+
   if (isSameLoadStore(Lhs, Ptr))
     return;
 
   // TODO: determine if the store is the first store to the location
+  assert(!AA->pointsToConstantMemory(Lhs));
+
   SmallPtrSet<Value *, 8> Visited;
   ++NumStoreInstrument;
   if (NeedInc && !maybeHeapPtr(Ptr, Visited))
