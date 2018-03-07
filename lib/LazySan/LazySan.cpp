@@ -148,12 +148,6 @@ static bool hasLifetimeMarkers(AllocaInst *AI) {
   return false;
 }
 
-void LazySanVisitor::handleScopeEntry(IRBuilder<> &B, Value *Dest,
-                                      Value *Size) {
-  Value *Cast = B.CreateBitCast(Dest, Type::getInt8PtrTy(Dest->getContext()));
-  B.CreateCall(ClearPtrLog, {Cast, Size});
-}
-
 void LazySanVisitor::handleScopeExit(IRBuilder<> &B, Value *Dest,
                                      Value *Size, bool Check) {
   Value *Cast = B.CreateBitCast(Dest, Type::getInt8PtrTy(Dest->getContext()));
@@ -216,12 +210,6 @@ void LazySanVisitor::visitAllocaInst(AllocaInst &I) {
                                               Builder.getInt64Ty(), false), Size);
     DynamicAllocaSizeMap[&I] = Size;
   }
-
-  // We clear ptrlog regardless of alloca type. We probably could do some
-  // optimization to ignore objects without any pointer type member,
-  // but for simplicity of design and easy debugging, just clear it all.
-  // TODO: merge ptrlog clearing in the backend!
-  handleScopeEntry(Builder, &I, Size);
 
   // But we could ignore those objects when we decrease reference counts
   if (checkTy(I.getType()))
@@ -467,9 +455,7 @@ void LazySanVisitor::handleLifetimeIntr(IntrinsicInst *I) {
   // We clear ptrlog for all types but optimize when we decrease refcnts.
   // (see comments in visitAllocaInst)
   Value *Size = I->getArgOperand(0);
-  if (I->getIntrinsicID() == Intrinsic::lifetime_start)
-    handleScopeEntry(Builder, Dest, Size);
-  else if (checkTy(Dest->getType()))
+  if (checkTy(Dest->getType()))
     handleScopeExit(Builder, Dest, Size);
   else if (EnableChecks)
     handleScopeExit(Builder, Dest, Size, /* Check = */ true);
@@ -533,8 +519,7 @@ void LazySanVisitor::visitCallSite(CallSite CS) {
     return;
 
   if (IntrinsicInst *Intr = dyn_cast<IntrinsicInst>(&I))
-    if (Intr->getIntrinsicID() == Intrinsic::lifetime_start
-        || Intr->getIntrinsicID() == Intrinsic::lifetime_end)
+    if (Intr->getIntrinsicID() == Intrinsic::lifetime_end)
       return handleLifetimeIntr(Intr);
 
   if (CalledFunc->getName().equals("free")

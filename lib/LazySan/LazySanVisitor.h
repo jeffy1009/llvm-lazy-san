@@ -48,7 +48,6 @@ class LazySanVisitor : public InstVisitor<LazySanVisitor> {
   bool checkStructTy(Type *Ty);
   bool checkTy(Type *Ty);
 
-  void handleScopeEntry(IRBuilder<> &B, Value *Dest, Value *Size);
   void handleScopeExit(IRBuilder<> &B, Value *Dest, Value *Size,
                        bool Check = false);
 
