@@ -112,108 +112,6 @@ bool LazySanVisitor::checkTy(Type *Ty) {
   return false;
 }
 
-void LazySanVisitor::insertRefCntFunc(Instruction *InsertPos,
-                                      Instruction *InsertPos2,
-                                      Value *V, bool ShouldInc) {
-  IRBuilder<> B(InsertPos);
-  LoadInst *Before = B.CreateLoad(V);
-  Value *CastBefore = B.CreateBitCast(Before,
-                                      Type::getInt8PtrTy(V->getContext()));
-  Value *CastV = B.CreateBitCast(V, Type::getInt8PtrTy(V->getContext()));
-  // TODO: beware of uninitialized values
-
-  if (!ShouldInc) {
-    B.CreateCall(DecRC, {CastBefore, CastV});
-    return;
-  }
-
-  B.SetInsertPoint(InsertPos2);
-  B.SetCurrentDebugLocation(InsertPos->getDebugLoc());
-  LoadInst *After = B.CreateLoad(V);
-  Value *CastAfter = B.CreateBitCast(After,
-                                     Type::getInt8PtrTy(V->getContext()));
-  B.CreateCall(IncRC, {CastAfter, CastV});
-  B.CreateCall(DecRC, {CastBefore, CastV});
-}
-
-void LazySanVisitor::handleArrayTy(Instruction *InsertPos,
-                                   Instruction *InsertPos2,
-                                   Value *V, Type *Ty,
-                                   SmallVectorImpl<Value *> &Indices,
-                                   bool ShouldInc) {
-  Type *ElemTy = Ty->getArrayElementType();
-  if (ElemTy->isIntegerTy() || ElemTy->isFloatingPointTy())
-    return;
-
-  IRBuilder<> B(InsertPos);
-  if (ElemTy->isPointerTy()) {
-    for (unsigned int i = 0, e = Ty->getArrayNumElements(); i < e; ++i) {
-      SmallVector<Value *, 4> TmpIndices(Indices.begin(), Indices.end());
-      TmpIndices.push_back(B.getInt32(i));
-      insertRefCntFunc(InsertPos, InsertPos2,
-                       B.CreateInBoundsGEP(V, TmpIndices), ShouldInc);
-    }
-    return;
-  } else if (ElemTy->isArrayTy()) {
-    for (unsigned int i = 0, e = Ty->getArrayNumElements(); i < e; ++i) {
-      SmallVector<Value *, 4> TmpIndices(Indices.begin(), Indices.end());
-      TmpIndices.push_back(B.getInt32(i));
-      handleArrayTy(InsertPos, InsertPos2, V, ElemTy, TmpIndices, ShouldInc);
-    }
-  } else {
-    assert(ElemTy->isStructTy());
-    for (unsigned int i = 0, e = Ty->getArrayNumElements(); i < e; ++i) {
-      SmallVector<Value *, 4> TmpIndices(Indices.begin(), Indices.end());
-      TmpIndices.push_back(B.getInt32(i));
-      handleStructTy(InsertPos, InsertPos2, V, ElemTy, TmpIndices, ShouldInc);
-    }
-  }
-}
-
-void LazySanVisitor::handleStructTy(Instruction *InsertPos,
-                                    Instruction *InsertPos2,
-                                    Value *V, Type *Ty,
-                                    SmallVectorImpl<Value *> &Indices,
-                                    bool ShouldInc) {
-  for (unsigned int i = 0, e = Ty->getStructNumElements(); i < e; ++i) {
-    Type *ElemTy = Ty->getStructElementType(i);
-    if (ElemTy->isIntegerTy() || ElemTy->isFloatingPointTy())
-      continue;
-
-    IRBuilder<> B(InsertPos);
-    SmallVector<Value *, 4> TmpIndices(Indices.begin(), Indices.end());
-    TmpIndices.push_back(B.getInt32(i));
-
-    if (ElemTy->isPointerTy()) {
-      insertRefCntFunc(InsertPos, InsertPos2,
-                       B.CreateInBoundsGEP(V, TmpIndices), ShouldInc);
-    } else if (ElemTy->isArrayTy()) {
-      handleArrayTy(InsertPos, InsertPos2, V, ElemTy, TmpIndices, ShouldInc);
-    } else {
-      assert(ElemTy->isStructTy());
-      handleStructTy(InsertPos, InsertPos2, V, ElemTy, TmpIndices, ShouldInc);
-    }
-  }
-}
-
-void LazySanVisitor::handleTy(Instruction *InsertPos, Instruction *InsertPos2,
-                              Value *V, bool ShouldInc) {
-  Type *Ty = cast<PointerType>(V->getType())->getElementType();
-  if (Ty->isPointerTy())
-    return insertRefCntFunc(InsertPos, InsertPos2, V, ShouldInc);
-
-  IRBuilder<> B(InsertPos);
-  SmallVector<Value *, 2> Indices;
-  Indices.push_back(B.getInt64(0));
-  if (Ty->isArrayTy())
-    return handleArrayTy(InsertPos, InsertPos2, V, Ty, Indices, ShouldInc);
-
-  if (Ty->isStructTy())
-    return handleStructTy(InsertPos, InsertPos2, V, Ty, Indices, ShouldInc);
-
-  assert(Ty->isIntegerTy() || Ty->isFloatingPointTy());
-}
-
 // Code copied from lib/Transforms/Utils/InlineFunction.cpp
 // Check whether this Value is used by a lifetime intrinsic.
 static bool isUsedByLifetimeMarker(Value *V) {
@@ -415,24 +313,6 @@ bool LazySanVisitor::shouldInstrument(Value *V,
   return false;
 }
 
-static bool visitConstant(Constant *C) {
-  if (isa<GlobalVariable>(C))
-    return false;
-
-  switch (cast<ConstantExpr>(C)->getOpcode()) {
-  case Instruction::BitCast:
-    return visitConstant(cast<Constant>(C->stripPointerCasts()));
-  case Instruction::GetElementPtr:
-    return visitConstant(cast<Constant>(C->getOperand(0)));
-  case Instruction::IntToPtr: // very rare case..
-    return false;
-  default:
-    assert(0);
-  }
-
-  return false;
-}
-
 bool LazySanVisitor::maybeHeapPtr(Value *V, SmallPtrSetImpl<Value *> &Visited) {
   if (!Visited.insert(V).second)
     return false;
@@ -448,8 +328,9 @@ bool LazySanVisitor::maybeHeapPtr(Value *V, SmallPtrSetImpl<Value *> &Visited) {
       || AA->pointsToConstantMemory(V))
     return false;
 
-  if (ConstantExpr *CE = dyn_cast<ConstantExpr>(V))
-    return visitConstant(CE);
+  // ConstantExpr cannot be a heap ptr..
+  if (isa<ConstantExpr>(V))
+    return false;
 
   switch (cast<Instruction>(V)->getOpcode()) {
   case Instruction::Alloca:
@@ -667,22 +548,9 @@ void LazySanVisitor::visitCallSite(CallSite CS) {
     return handleMemTransfer(cast<CallInst>(&I));
 }
 
-static bool isReachable(BasicBlock *BB, BasicBlock *DestBB,
-                        SmallPtrSetImpl<BasicBlock*> &Visited) {
-  if (!Visited.insert(BB).second)
-    return false;
-
-  for (BasicBlock *Succ : successors(BB))
-    if (Succ==DestBB || isReachable(Succ, DestBB, Visited))
-      return true;
-
-  return false;
-}
-
 void LazySanVisitor::visitReturnInst(ReturnInst &I) {
   IRBuilder<> Builder(&I);
 
-  BasicBlock *RetBB = I.getParent();
   for (AllocaInst *AI : AllocaInsts) {
     Value *Size = AI->isArrayAllocation() ?
       DynamicAllocaSizeMap[AI] : Builder.getInt64(getAllocaSizeInBytes(AI));

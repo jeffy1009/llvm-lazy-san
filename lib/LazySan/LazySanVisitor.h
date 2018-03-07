@@ -48,18 +48,6 @@ class LazySanVisitor : public InstVisitor<LazySanVisitor> {
   bool checkStructTy(Type *Ty);
   bool checkTy(Type *Ty);
 
-  // handle*** - insert reference count inc/dec calls
-  void insertRefCntFunc(Instruction *InsertPos, Instruction *InsertPos2,
-                        Value *V, bool ShouldInc);
-  void handleArrayTy(Instruction *InsertPos, Instruction *InsertPos2,
-                     Value *V, Type *Ty, SmallVectorImpl<Value *> &Indices,
-                     bool ShouldInc);
-  void handleStructTy(Instruction *InsertPos, Instruction *InsertPos2,
-                      Value *V, Type *Ty, SmallVectorImpl<Value *> &Indices,
-                      bool ShouldInc);
-  void handleTy(Instruction *InsertPos, Instruction *InsertPos2,
-                Value *V, bool ShouldInc);
-
   void handleScopeEntry(IRBuilder<> &B, Value *Dest, Value *Size);
   void handleScopeExit(IRBuilder<> &B, Value *Dest, Value *Size,
                        bool Check = false);
