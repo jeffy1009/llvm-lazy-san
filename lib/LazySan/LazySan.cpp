@@ -35,17 +35,11 @@ LazySanVisitor::LazySanVisitor(Module &M, const EQTDDataStructures *dsa,
                                AliasAnalysis *aa, DominatorTree *dt,
                                LoopInfo *li)
   : DSA(dsa), AA(aa), DT(dt), LI(li), HandleDynamicAlloca(false) {
-  DecRC = M.getFunction("ls_dec_refcnt");
-  IncRC = M.getFunction("ls_inc_refcnt");
   IncDecRC = M.getFunction("ls_incdec_refcnt");
   IncDecRC_noinc = M.getFunction("ls_incdec_refcnt_noinc");
-  ClearPtrLog = M.getFunction("ls_clear_ptrlog");
-  CpyPtrLog = M.getFunction("ls_copy_ptrlog");
   CheckPtrLog = M.getFunction("ls_check_ptrlog");
-  IncPtrLog = M.getFunction("ls_inc_ptrlog");
   DecPtrLog = M.getFunction("ls_dec_ptrlog");
   DecPtrLogAddr = M.getFunction("ls_dec_ptrlog_addr");
-  DecAndClearPtrLog = M.getFunction("ls_dec_clear_ptrlog");
   IncDecCpyPtrLog = M.getFunction("ls_incdec_copy_ptrlog");
   IncDecMovePtrLog = M.getFunction("ls_incdec_move_ptrlog");
 }
@@ -473,7 +467,7 @@ void LazySanVisitor::handleMemSet(CallInst *I) {
     return;
   }
 
-  Builder.CreateCall(DecAndClearPtrLog, {DestCast, Size});
+  Builder.CreateCall(DecPtrLog, {DestCast, Size});
 }
 
 void LazySanVisitor::handleMemTransfer(CallInst *I) {

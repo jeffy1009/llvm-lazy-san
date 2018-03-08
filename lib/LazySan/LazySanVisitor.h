@@ -26,9 +26,9 @@ class LazySanVisitor : public InstVisitor<LazySanVisitor> {
   // allocas to be checked when -enable-check is on
   SmallVector<AllocaInst *, 16> AllocaInstsCheck;
 
-  Function *DecRC, *IncRC, *IncDecRC, *IncDecRC_noinc;
-  Function *ClearPtrLog, *CpyPtrLog, *CheckPtrLog, *IncPtrLog, *DecPtrLog, *DecPtrLogAddr;
-  Function *DecAndClearPtrLog, *IncDecCpyPtrLog, *IncDecMovePtrLog;
+  Function *IncDecRC, *IncDecRC_noinc;
+  Function *CheckPtrLog, *DecPtrLog, *DecPtrLogAddr;
+  Function *IncDecCpyPtrLog, *IncDecMovePtrLog;
 
   bool HandleDynamicAlloca;
 
