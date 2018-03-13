@@ -51,6 +51,8 @@ class LazySanVisitor : public InstVisitor<LazySanVisitor> {
   void handleScopeExit(IRBuilder<> &B, Value *Dest, Value *Size,
                        bool Check = false);
 
+  bool isCastFromPtr(Value *V, SmallPtrSetImpl<Value *> &Visited,
+                     bool LookForDoublePtr);
   bool shouldInstrument(Value *V, SmallPtrSetImpl<Value *> &Visited,
                         bool LookForUnion = false);
   bool maybeHeapPtr(Value *V, SmallPtrSetImpl<Value *> &Visited);

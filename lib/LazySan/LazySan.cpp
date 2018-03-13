@@ -218,7 +218,73 @@ static bool isUnionTy(Type *Ty) {
     && cast<StructType>(Ty)->getName().startswith("union");
 }
 
-// TODO: do similar thing with RHS
+// IR optimizations may convert pointer types into integer types. Need to find
+// those cases
+// This should always return false if bitcast folding is disabled. The preferred
+// way is to enable bitcast folding and make this function useful, but I don't
+// know if it is possible to make this function 100% accurate
+bool LazySanVisitor::isCastFromPtr(Value *V,
+                                   SmallPtrSetImpl<Value *> &Visited,
+                                   bool LookForDoublePtr) {
+  // Avoid recursion due to PHIs in Loops
+  if (!Visited.insert(V).second)
+    return false;
+
+  if (isa<Argument>(V))
+    return false;
+
+  if (isa<Constant>(V)) {
+    if (isa<ConstantInt>(V) || isa<ConstantFP>(V) || isa<ConstantPointerNull>(V)
+        || isa<GlobalVariable>(V) || isa<UndefValue>(V))
+      return false;
+  }
+
+  if (isa<BitCastInst>(V)
+      || (isa<ConstantExpr>(V)
+          && cast<ConstantExpr>(V)->getOpcode() == Instruction::BitCast)) {
+    Value *BCI = cast<User>(V)->getOperand(0);
+    if (LookForDoublePtr)
+      return isDoublePointer(BCI);
+    else if (BCI->getType()->isPointerTy())
+      return true;
+  }
+
+  if (isa<GetElementPtrInst>(V)
+      || (isa<ConstantExpr>(V)
+           && cast<ConstantExpr>(V)->getOpcode() == Instruction::GetElementPtr))
+    return false;
+
+  if (isa<Instruction>(V))
+    if (isa<BinaryOperator>(V) || isa<CastInst>(V))
+      return false;
+
+  switch (cast<Instruction>(V)->getOpcode()) {
+  case Instruction::Alloca:
+  case Instruction::Call:
+  case Instruction::ExtractValue:
+    return false;
+  case Instruction::Load: {
+    if (LookForDoublePtr)
+      return false;
+    return isCastFromPtr(cast<LoadInst>(V)->getPointerOperand(), Visited, true);
+  }
+  case Instruction::PHI: {
+    PHINode *Phi = cast<PHINode>(V);
+    bool Found = false;
+    for (unsigned i = 0, e = Phi->getNumIncomingValues(); i != e; i++)
+      Found |= isCastFromPtr(Phi->getIncomingValue(i), Visited, LookForDoublePtr);
+    return Found;
+  }
+  case Instruction::Select: {
+    SelectInst *SI = cast<SelectInst>(V);
+    return isCastFromPtr(SI->getTrueValue(), Visited, LookForDoublePtr)
+      || isCastFromPtr(SI->getFalseValue(), Visited, LookForDoublePtr);
+  }
+  }
+
+  return false;
+}
+
 bool LazySanVisitor::shouldInstrument(Value *V,
                                       SmallPtrSetImpl<Value *> &Visited,
                                       bool LookForUnion) {
@@ -318,6 +384,7 @@ bool LazySanVisitor::maybeHeapPtr(Value *V, SmallPtrSetImpl<Value *> &Visited) {
   case Instruction::Alloca:
     return false;
   case Instruction::Call:
+  case Instruction::ExtractValue:
   case Instruction::IntToPtr:
   case Instruction::Invoke:
   case Instruction::PtrToInt:
@@ -361,13 +428,15 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
   bool NeedInc = true;
   // TODO: make sure that we are not skipping any instructions we need to handle
   // and skipping those we don't
-  if (!ScalarTy->isPointerTy() && !isa<PtrToIntInst>(Ptr)) {
+  SmallPtrSet<Value *, 8> Visited;
+  if (!ScalarTy->isPointerTy() && !isa<PtrToIntInst>(Ptr)
+      && !isCastFromPtr(Ptr, Visited, false)) {
     // Ptr is probably not a pointer. Don't need to increase refcnt
     NeedInc = false;
     // Here we search for possible union type store.
     // We need this because pointer may be overwritten by non-pointer
     // (and we have to decrease refcnt in that case)
-    SmallPtrSet<Value *, 8> Visited;
+    Visited.clear();
     if (!shouldInstrument(Lhs, Visited)) {
       //assert(!isPointerOperand(Ptr));   // double check with dangsan
       return;
@@ -402,7 +471,7 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
   // TODO: determine if the store is the first store to the location
   assert(!AA->pointsToConstantMemory(Lhs));
 
-  SmallPtrSet<Value *, 8> Visited;
+  Visited.clear();
   ++NumStoreInstrument;
   if (NeedInc && !maybeHeapPtr(Ptr, Visited))
     NeedInc = false;
