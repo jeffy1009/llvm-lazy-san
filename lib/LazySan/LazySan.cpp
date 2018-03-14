@@ -650,7 +650,7 @@ bool LazySan::runOnFunction(Function &F) {
 
 // IMPORTANT: make sure these include all functions in the static lib
 static char const *LSFuncs[] = {
-  "atexit_hook", "init_lazysan", "sys_mmap", "get_obj_info", "delete_obj_info", "ls_free", "alloc_common", "alloc_obj_info", "free_common", "ls_dec_refcnt", "ls_inc_refcnt", "ls_incdec_refcnt_noinc", "ls_incdec_refcnt", "ls_clear_ptrlog", "ls_copy_ptrlog", "ls_incdec_copy_ptrlog", "ls_incdec_move_ptrlog", "ls_check_ptrlog", "ls_inc_ptrlog", "ls_dec_ptrlog_int", "ls_dec_ptrlog", "ls_dec_ptrlog_addr", "ls_dec_clear_ptrlog", "malloc_wrap", "calloc_wrap", "realloc_wrap", "free_wrap", "_Znwm_wrap", "_Znam_wrap", "_ZdlPv_wrap", "_ZdaPv_wrap",
+  "atexit_hook", "init_lazysan", "sys_mmap", "alloc_obj_info", "get_obj_info", "delete_obj_info", "ls_free", "ls_dec_refcnt", "ls_inc_refcnt", "ls_incdec_refcnt_noinc", "ls_incdec_refcnt", "ls_copy_ptrlog", "ls_incdec_copy_ptrlog", "ls_incdec_move_ptrlog", "ls_check_ptrlog", "ls_inc_ptrlog", "ls_dec_ptrlog_int", "ls_dec_ptrlog", "ls_dec_ptrlog_addr", "alloc_common", "free_common", "realloc_hook",
   "metaset_4", "metaset_8", "metaget_4", "metaget_8",
   "RBTreeCompare", "RBTreeCreate", "LeftRotate", "RightRotate", "TreeInsertHelp", "RBTreeInsert", "TreeSuccessor", "InorderTreePrint", "TreeDestHelper", "RBTreeDestroy", "RBTreePrint", "RBExactQuery", "RBDeleteFixUp", "RBDelete"
 };
@@ -673,55 +673,6 @@ bool LazySan::runOnModule(Module &M) {
     runOnFunction(F);
   }
   DEBUG(dbgs() << '\n');
-
-  static char const *MMFuncs[] = {
-    "malloc", "calloc", "realloc", "free", "_Znwm", "_Znam", "_ZdlPv", "_ZdaPv"
-  };
-
-  // to handle indirect calls to malloc/frees
-  for (unsigned int i = 0; i < (sizeof(MMFuncs) / sizeof(MMFuncs[0])); ++i) {
-    SmallString<16> WrapName;
-    Function *Orig = M.getFunction(MMFuncs[i]);
-    if (!Orig || !Orig->empty()) continue;
-    Function *Wrap = M.getFunction((Twine(MMFuncs[i])+"_wrap").toStringRef(WrapName));
-    // Need to gather users first instead of changing directly, to not mess
-    // with the iterator...
-    SmallVector<Use *, 32> Uses;
-    for (Use &U : Orig->uses()) {
-      User *Usr = U.getUser();
-      if (Instruction *Inst = dyn_cast<Instruction>(Usr))
-        if (isLSFunc(Inst->getFunction()->getName()))
-          continue;
-      Uses.push_back(&U);
-    }
-
-    for (Use *U : Uses) {
-      User *Usr = U->getUser();
-      if (isa<Instruction>(Usr)) {
-        Usr->replaceUsesOfWith(Orig, Wrap);
-        continue;
-      }
-
-      Constant *C = cast<Constant>(Usr);
-      SmallVector<User *, 32> CUsers;
-      for (User *CU : C->users()) {
-        Instruction *CUI = cast<Instruction>(CU);
-        if (!isLSFunc(CUI->getFunction()->getName()))
-          continue;
-        // static lib func should not be effected
-        CUsers.push_back(CU);
-      }
-
-      // Again, do this separately here to NOT mess with iterator..
-      for (User *CU : CUsers) {
-        Instruction *CUI = cast<Instruction>(CU);
-        Instruction *New = cast<ConstantExpr>(C)->getAsInstruction();
-        New->insertBefore(CUI);
-        CUI->replaceUsesOfWith(C, New);
-      }
-      C->handleOperandChange(Orig, Wrap, U);
-    }
-  }
 
   dbgs() << "LazySan Instrumentation End\n";
 
