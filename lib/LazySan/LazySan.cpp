@@ -102,7 +102,10 @@ bool LazySanVisitor::checkTy(Type *Ty) {
   if (ElemTy->isIntegerTy(8))
     return true;
 
-  assert(ElemTy->isIntegerTy() || ElemTy->isFloatingPointTy());
+  // Even if no-vectorize option is used, vector type is generated sometimes.
+  // But it shouldn't have any pointer types.
+  assert(ElemTy->isIntegerTy() || ElemTy->isFloatingPointTy()
+         || ElemTy->isVectorTy());
   return false;
 }
 
@@ -237,6 +240,9 @@ bool LazySanVisitor::isCastFromPtr(Value *V,
     if (isa<ConstantInt>(V) || isa<ConstantFP>(V) || isa<ConstantPointerNull>(V)
         || isa<GlobalVariable>(V) || isa<UndefValue>(V))
       return false;
+    if (isa<ConstantExpr>(V)
+        && cast<ConstantExpr>(V)->getOpcode() == Instruction::PtrToInt)
+      return true;
   }
 
   if (isa<BitCastInst>(V)
@@ -254,15 +260,14 @@ bool LazySanVisitor::isCastFromPtr(Value *V,
            && cast<ConstantExpr>(V)->getOpcode() == Instruction::GetElementPtr))
     return false;
 
-  if (isa<Instruction>(V))
-    if (isa<BinaryOperator>(V) || isa<CastInst>(V))
-      return false;
-
   switch (cast<Instruction>(V)->getOpcode()) {
   case Instruction::Alloca:
   case Instruction::Call:
   case Instruction::ExtractValue:
+  case Instruction::Invoke:
     return false;
+  case Instruction::PtrToInt:
+    return true;
   case Instruction::Load: {
     if (LookForDoublePtr)
       return false;
@@ -280,8 +285,15 @@ bool LazySanVisitor::isCastFromPtr(Value *V,
     return isCastFromPtr(SI->getTrueValue(), Visited, LookForDoublePtr)
       || isCastFromPtr(SI->getFalseValue(), Visited, LookForDoublePtr);
   }
+  default:;
   }
 
+  if (isa<Instruction>(V)) {
+    if (isa<BinaryOperator>(V) || isa<CastInst>(V))
+      return false;
+  }
+
+  assert(0);
   return false;
 }
 
@@ -292,6 +304,7 @@ bool LazySanVisitor::shouldInstrument(Value *V,
   if (!Visited.insert(V).second)
     return false;
 
+#ifndef NDEBUG
   if (!isa<User>(V))
     assert(isa<Argument>(V));
   if (isa<Constant>(V))
@@ -306,6 +319,7 @@ bool LazySanVisitor::shouldInstrument(Value *V,
            || isa<ExtractValueInst>(V) || isa<GetElementPtrInst>(V)
            || isa<IntToPtrInst>(V) || isa<InvokeInst>(V) || isa<LoadInst>(V)
            || isa<PHINode>(V) || isa<SelectInst>(V));
+#endif
 
   // TODO: Handling bitcasts and getelementptrs are not 100% accurate.
   if (isa<BitCastInst>(V)
@@ -320,12 +334,20 @@ bool LazySanVisitor::shouldInstrument(Value *V,
     // assert(LookForUnion
     //        || !(ElemTy->isStructTy() &&
     //             !(isUnionTy(ElemTy) && ElemTy->getStructNumElements()==1)));
-    assert(!(ElemTy->isArrayTy() && checkArrayTy(ElemTy, true)));
+#ifndef NDEBUG
+    if (ElemTy->isArrayTy())
+      assert((ElemTy->getArrayNumElements() == 1
+              && ElemTy->getArrayElementType()->isPointerTy())
+             || !checkArrayTy(ElemTy, true));
+#endif
     if (!LookForUnion
-        && (isDoublePointer(BCI)
+        && (ElemTy->isPointerTy()
             || (ElemTy->isStructTy() && ElemTy->getStructNumElements()==1
                 && ElemTy->getStructElementType(0)->isPointerTy())
-            || (ElemTy->isArrayTy() && ElemTy->getArrayElementType()->isIntegerTy(8))))
+            || (ElemTy->isArrayTy() &&
+                ((ElemTy->getArrayNumElements()==1
+                  && ElemTy->getArrayElementType()->isPointerTy())
+                 || ElemTy->getArrayElementType()->isIntegerTy(8)))))
       return true;
     return shouldInstrument(BCI, Visited, LookForUnion);
   }
@@ -372,12 +394,7 @@ bool LazySanVisitor::maybeHeapPtr(Value *V, SmallPtrSetImpl<Value *> &Visited) {
   if (isa<Argument>(V))
     return true;
 
-  if (isa<ConstantPointerNull>(V) || isa<GlobalValue>(V) || isa<UndefValue>(V)
-      || AA->pointsToConstantMemory(V))
-    return false;
-
-  // ConstantExpr cannot be a heap ptr..
-  if (isa<ConstantExpr>(V))
+  if (isa<Constant>(V) || AA->pointsToConstantMemory(V))
     return false;
 
   switch (cast<Instruction>(V)->getOpcode()) {
@@ -410,10 +427,10 @@ bool LazySanVisitor::maybeHeapPtr(Value *V, SmallPtrSetImpl<Value *> &Visited) {
     return maybeHeapPtr(SI->getTrueValue(), Visited)
       || maybeHeapPtr(SI->getFalseValue(), Visited);
   }
-  default:
-    assert(0);
+  default:;
   }
 
+  assert(0);
   return false;
 }
 
@@ -429,8 +446,8 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
   // TODO: make sure that we are not skipping any instructions we need to handle
   // and skipping those we don't
   SmallPtrSet<Value *, 8> Visited;
-  if (!ScalarTy->isPointerTy() && !isa<PtrToIntInst>(Ptr)
-      && !isCastFromPtr(Ptr, Visited, false)) {
+  if (ScalarTy->isFloatingPointTy() ||
+      (!ScalarTy->isPointerTy() && !isCastFromPtr(Ptr, Visited, false))) {
     // Ptr is probably not a pointer. Don't need to increase refcnt
     NeedInc = false;
     // Here we search for possible union type store.
