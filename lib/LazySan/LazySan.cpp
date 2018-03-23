@@ -304,22 +304,17 @@ bool LazySanVisitor::shouldInstrument(Value *V,
   if (!Visited.insert(V).second)
     return false;
 
-#ifndef NDEBUG
-  if (!isa<User>(V))
-    assert(isa<Argument>(V));
-  if (isa<Constant>(V))
-    assert(isa<ConstantExpr>(V) || isa<ConstantPointerNull>(V)
-           || isa<GlobalVariable>(V) || isa<UndefValue>(V));
-  if (isa<ConstantExpr>(V))
-    assert(cast<ConstantExpr>(V)->getOpcode() == Instruction::BitCast
-           || cast<ConstantExpr>(V)->getOpcode() == Instruction::GetElementPtr
-           || cast<ConstantExpr>(V)->getOpcode() == Instruction::IntToPtr);
-  if (isa<Instruction>(V))
-    assert(isa<AllocaInst>(V) || isa<BitCastInst>(V) || isa<CallInst>(V)
-           || isa<ExtractValueInst>(V) || isa<GetElementPtrInst>(V)
-           || isa<IntToPtrInst>(V) || isa<InvokeInst>(V) || isa<LoadInst>(V)
-           || isa<PHINode>(V) || isa<SelectInst>(V));
-#endif
+  if (isa<Argument>(V))
+    return false;
+
+  if (isa<Constant>(V)) {
+    if (isa<ConstantPointerNull>(V) || isa<GlobalVariable>(V)
+        || isa<UndefValue>(V))
+      return false;
+    if (isa<ConstantExpr>(V)
+        && cast<ConstantExpr>(V)->getOpcode() == Instruction::IntToPtr)
+      return false;
+  }
 
   // TODO: Handling bitcasts and getelementptrs are not 100% accurate.
   if (isa<BitCastInst>(V)
@@ -367,19 +362,32 @@ bool LazySanVisitor::shouldInstrument(Value *V,
                             GEP->getNumOperands() > 2 ? true : false);
   }
 
-  if (PHINode *Phi = dyn_cast<PHINode>(V)) {
+  switch (cast<Instruction>(V)->getOpcode()) {
+  case Instruction::Alloca:
+  case Instruction::Call:
+  case Instruction::ExtractValue:
+  case Instruction::IntToPtr:
+  case Instruction::Invoke:
+    return false;
+  case Instruction::Load: {
+    return false;
+  }
+  case Instruction::PHI: {
+    PHINode *Phi = cast<PHINode>(V);
     bool Should = false;
     for (unsigned i = 0, e = Phi->getNumIncomingValues(); i != e; i++)
       Should |= shouldInstrument(Phi->getIncomingValue(i), Visited,
                                  LookForUnion);
     return Should;
   }
-
-  if (SelectInst *SI = dyn_cast<SelectInst>(V))
+  case Instruction::Select: {
+    SelectInst *SI = cast<SelectInst>(V);
     return shouldInstrument(SI->getTrueValue(), Visited, LookForUnion)
       || shouldInstrument(SI->getFalseValue(), Visited, LookForUnion);
+  }
+  }
 
-  // TODO: should we handle LoadInst?
+  assert(0);
   return false;
 }
 
