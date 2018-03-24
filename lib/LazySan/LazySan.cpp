@@ -29,6 +29,8 @@ EnableDSA("lazysan-enable-dsa",
              cl::init(false));
 
 static unsigned long NumStoreInstrument;
+static unsigned long NumStoreInstrumentIncDec;
+static unsigned long NumStoreInstrumentNoInc;
 static unsigned long NumRemovedByDSA;
 
 LazySanVisitor::LazySanVisitor(Module &M, const EQTDDataStructures *dsa,
@@ -221,8 +223,27 @@ static bool isUnionTy(Type *Ty) {
     && cast<StructType>(Ty)->getName().startswith("union");
 }
 
+static bool isPointer(Type *T) {
+  if (T->isPointerTy())
+    return true;
+  if (T->isStructTy() && T->getStructNumElements()==1)
+    return isPointer(T->getStructElementType(0));
+  if (T->isArrayTy()) {
+    if (T->getArrayNumElements()==1)
+      return isPointer(T->getArrayElementType());
+    return T->getArrayElementType()->isIntegerTy(8);
+  }
+  return false;
+}
+
 static bool isDoublePointer(Type *T) {
-  return T->isPointerTy() && T->getContainedType(0)->isPointerTy();
+  if (T->isPointerTy())
+    return isPointer(T->getPointerElementType());
+  if (T->isStructTy() && T->getStructNumElements()==1)
+    return isDoublePointer(T->getStructElementType(0));
+  if (T->isArrayTy() && T->getArrayNumElements()==1)
+    return isDoublePointer(T->getArrayElementType());
+  return false;
 }
 
 // IR optimizations may convert pointer types into integer types. Need to find
@@ -253,10 +274,14 @@ bool LazySanVisitor::isCastFromPtr(Value *V,
       || (isa<ConstantExpr>(V)
           && cast<ConstantExpr>(V)->getOpcode() == Instruction::BitCast)) {
     Value *BCI = cast<User>(V)->getOperand(0);
-    if (LookForDoublePtr)
-      return isDoublePointer(BCI->getType());
-    else if (BCI->getType()->isPointerTy())
-      return true;
+    if (LookForDoublePtr) {
+      if (isDoublePointer(BCI->getType()))
+        return true;
+    } else {
+      if (isPointer(BCI->getType()))
+        return true;
+    }
+    return isCastFromPtr(BCI, Visited, LookForDoublePtr);
   }
 
   if (isa<GetElementPtrInst>(V)
@@ -341,23 +366,10 @@ bool LazySanVisitor::shouldInstrument(Value *V,
 #endif
     if (!LookForUnion) {
       if (LookForDoublePtr) {
-        if (isDoublePointer(ElemTy)
-            || (ElemTy->isStructTy() && ElemTy->getStructNumElements()==1
-                && isDoublePointer(ElemTy->getStructElementType(0)))
-            || (ElemTy->isArrayTy() &&
-                ((ElemTy->getArrayNumElements()==1
-                  && isDoublePointer(ElemTy->getArrayElementType()))
-                 || (ElemTy->getArrayElementType()->isPointerTy()
-                     && ElemTy->getArrayElementType()->getPointerElementType()->isIntegerTy(8)))))
+        if (isDoublePointer(ElemTy))
           return true;
       } else {
-        if (ElemTy->isPointerTy()
-            || (ElemTy->isStructTy() && ElemTy->getStructNumElements()==1
-                && ElemTy->getStructElementType(0)->isPointerTy())
-            || (ElemTy->isArrayTy() &&
-                ((ElemTy->getArrayNumElements()==1
-                  && ElemTy->getArrayElementType()->isPointerTy())
-                 || ElemTy->getArrayElementType()->isIntegerTy(8))))
+        if (isPointer(ElemTy))
           return true;
       }
     }
@@ -387,9 +399,12 @@ bool LazySanVisitor::shouldInstrument(Value *V,
   case Instruction::IntToPtr:
   case Instruction::Invoke:
     return false;
-  case Instruction::Load:
+  case Instruction::Load: {
+    if (LookForDoublePtr) // TODO: look further?
+      return false;
     return shouldInstrument(cast<LoadInst>(V)->getPointerOperand(), Visited,
                      LookForUnion, true);
+  }
   case Instruction::PHI: {
     PHINode *Phi = cast<PHINode>(V);
     bool Should = false;
@@ -405,6 +420,7 @@ bool LazySanVisitor::shouldInstrument(Value *V,
       || shouldInstrument(SI->getFalseValue(), Visited, LookForUnion,
                           LookForDoublePtr);
   }
+  default:;
   }
 
   assert(0);
@@ -490,11 +506,8 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
     // We need this because pointer may be overwritten by non-pointer
     // (and we have to decrease refcnt in that case)
     Visited.clear();
-    if (!shouldInstrument(Lhs, Visited, false, false)) {
-      //assert(!isPointerOperand(Ptr));   // double check with dangsan
+    if (!shouldInstrument(Lhs, Visited, false, false))
       return;
-    }
-    //assert(!isPointerOperand(Ptr));
   }
 
   MDNode *MDN = I.getMetadata(LLVMContext::MD_dbg);
@@ -539,8 +552,10 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
     SrcCast =
       Builder.CreateBitOrPointerCast(Ptr, Type::getInt8PtrTy(I.getContext()));
     Builder.CreateCall(IncDecRC, {SrcCast, DstCast});
+    ++NumStoreInstrumentIncDec;
   } else {
     Builder.CreateCall(IncDecRC_noinc, {DstCast});
+    ++NumStoreInstrumentNoInc;
   }
 }
 
@@ -730,7 +745,9 @@ bool LazySan::runOnModule(Module &M) {
   dbgs() << "LazySan Instrumentation End\n";
 
   // Print stats. Do this here to enable even on release build.
-  dbgs() << "# of stores instrumented: " << NumStoreInstrument << '\n'
+  dbgs() << "# of stores instrumented: " << NumStoreInstrument
+         << " (incdec: " << NumStoreInstrumentIncDec
+         << ", noinc: " << NumStoreInstrumentNoInc << ")\n"
          << "# of instrumentations removed by DSA: " << NumRemovedByDSA << '\n';
 
   return true;
