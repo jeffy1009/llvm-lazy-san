@@ -32,7 +32,7 @@ bool LazySanVisitor::isPointerOperand(Value *V) {
   if (LoadInst *LI = dyn_cast<LoadInst>(V)) {
     DEBUG_MSG(errs () << "Load Instruction \n");
     Value *LoadPtr = LI->getPointerOperand();
-    if (isDoublePointer(LoadPtr)) {
+    if (isDoublePointer(LoadPtr->getType())) {
       DEBUG_MSG(errs() << "Load double pointer type \n");
       return true;
     }
@@ -61,7 +61,7 @@ bool LazySanVisitor::isPointerOperand(Value *V) {
       Inst->dropAllReferences();
     }
 
-    if (DeepLoadPtr && isDoublePointer(DeepLoadPtr)) {
+    if (DeepLoadPtr && isDoublePointer(DeepLoadPtr->getType())) {
       DEBUG_MSG(errs() << "Double pointer type \n");
       return true;
     }
@@ -69,7 +69,6 @@ bool LazySanVisitor::isPointerOperand(Value *V) {
   return false;
 }
 
-bool LazySanVisitor::isDoublePointer(Value *V) {
-  const Type* T = V->getType();
+bool LazySanVisitor::isDoublePointer(Type *T) {
   return T->isPointerTy() && T->getContainedType(0)->isPointerTy();
 }

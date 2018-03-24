@@ -54,7 +54,7 @@ class LazySanVisitor : public InstVisitor<LazySanVisitor> {
   bool isCastFromPtr(Value *V, SmallPtrSetImpl<Value *> &Visited,
                      bool LookForDoublePtr);
   bool shouldInstrument(Value *V, SmallPtrSetImpl<Value *> &Visited,
-                        bool LookForUnion = false);
+                        bool LookForUnion, bool LookForDoublePtr);
   bool maybeHeapPtr(Value *V, SmallPtrSetImpl<Value *> &Visited);
 
   void handleLifetimeIntr(IntrinsicInst *I);
@@ -65,7 +65,7 @@ class LazySanVisitor : public InstVisitor<LazySanVisitor> {
   // Code from DangSan
   bool isSameLoadStore(Value *ptr_addr, Value *obj_addr);
   bool isPointerOperand(Value *V);
-  bool isDoublePointer(Value *V);
+  bool isDoublePointer(Type *T);
 };
 
 }

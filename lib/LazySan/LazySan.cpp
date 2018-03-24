@@ -250,7 +250,7 @@ bool LazySanVisitor::isCastFromPtr(Value *V,
           && cast<ConstantExpr>(V)->getOpcode() == Instruction::BitCast)) {
     Value *BCI = cast<User>(V)->getOperand(0);
     if (LookForDoublePtr)
-      return isDoublePointer(BCI);
+      return isDoublePointer(BCI->getType());
     else if (BCI->getType()->isPointerTy())
       return true;
   }
@@ -299,7 +299,7 @@ bool LazySanVisitor::isCastFromPtr(Value *V,
 
 bool LazySanVisitor::shouldInstrument(Value *V,
                                       SmallPtrSetImpl<Value *> &Visited,
-                                      bool LookForUnion) {
+                                      bool LookForUnion, bool LookForDoublePtr) {
   // Avoid recursion due to PHIs in Loops
   if (!Visited.insert(V).second)
     return false;
@@ -335,16 +335,29 @@ bool LazySanVisitor::shouldInstrument(Value *V,
               && ElemTy->getArrayElementType()->isPointerTy())
              || !checkArrayTy(ElemTy, true));
 #endif
-    if (!LookForUnion
-        && (ElemTy->isPointerTy()
+    if (!LookForUnion) {
+      if (LookForDoublePtr) {
+        if (isDoublePointer(ElemTy)
+            || (ElemTy->isStructTy() && ElemTy->getStructNumElements()==1
+                && isDoublePointer(ElemTy->getStructElementType(0)))
+            || (ElemTy->isArrayTy() &&
+                ((ElemTy->getArrayNumElements()==1
+                  && isDoublePointer(ElemTy->getArrayElementType()))
+                 || (ElemTy->getArrayElementType()->isPointerTy()
+                     && ElemTy->getArrayElementType()->getPointerElementType()->isIntegerTy(8)))))
+          return true;
+      } else {
+        if (ElemTy->isPointerTy()
             || (ElemTy->isStructTy() && ElemTy->getStructNumElements()==1
                 && ElemTy->getStructElementType(0)->isPointerTy())
             || (ElemTy->isArrayTy() &&
                 ((ElemTy->getArrayNumElements()==1
                   && ElemTy->getArrayElementType()->isPointerTy())
-                 || ElemTy->getArrayElementType()->isIntegerTy(8)))))
-      return true;
-    return shouldInstrument(BCI, Visited, LookForUnion);
+                 || ElemTy->getArrayElementType()->isIntegerTy(8))))
+          return true;
+      }
+    }
+    return shouldInstrument(BCI, Visited, LookForUnion, LookForDoublePtr);
   }
 
   if (isa<GetElementPtrInst>(V)
@@ -359,7 +372,8 @@ bool LazySanVisitor::shouldInstrument(Value *V,
       if (isUnionTy(*GTI) && checkStructTy(*GTI))
         return true;
     return shouldInstrument(GEP->getOperand(0), Visited,
-                            GEP->getNumOperands() > 2 ? true : false);
+                            GEP->getNumOperands() > 2 ? true : false,
+                            LookForDoublePtr);
   }
 
   switch (cast<Instruction>(V)->getOpcode()) {
@@ -369,21 +383,23 @@ bool LazySanVisitor::shouldInstrument(Value *V,
   case Instruction::IntToPtr:
   case Instruction::Invoke:
     return false;
-  case Instruction::Load: {
-    return false;
-  }
+  case Instruction::Load:
+    return shouldInstrument(cast<LoadInst>(V)->getPointerOperand(), Visited,
+                     LookForUnion, true);
   case Instruction::PHI: {
     PHINode *Phi = cast<PHINode>(V);
     bool Should = false;
     for (unsigned i = 0, e = Phi->getNumIncomingValues(); i != e; i++)
       Should |= shouldInstrument(Phi->getIncomingValue(i), Visited,
-                                 LookForUnion);
+                                 LookForUnion, LookForDoublePtr);
     return Should;
   }
   case Instruction::Select: {
     SelectInst *SI = cast<SelectInst>(V);
-    return shouldInstrument(SI->getTrueValue(), Visited, LookForUnion)
-      || shouldInstrument(SI->getFalseValue(), Visited, LookForUnion);
+    return shouldInstrument(SI->getTrueValue(), Visited, LookForUnion,
+                            LookForDoublePtr)
+      || shouldInstrument(SI->getFalseValue(), Visited, LookForUnion,
+                          LookForDoublePtr);
   }
   }
 
@@ -462,7 +478,7 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
     // We need this because pointer may be overwritten by non-pointer
     // (and we have to decrease refcnt in that case)
     Visited.clear();
-    if (!shouldInstrument(Lhs, Visited)) {
+    if (!shouldInstrument(Lhs, Visited, false, false)) {
       //assert(!isPointerOperand(Ptr));   // double check with dangsan
       return;
     }
