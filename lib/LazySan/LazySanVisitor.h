@@ -61,11 +61,6 @@ class LazySanVisitor : public InstVisitor<LazySanVisitor> {
   void decreaseRefcntAtFree(CallInst *I);
   void handleMemSet(CallInst *I);
   void handleMemTransfer(CallInst *I);
-
-  // Code from DangSan
-  bool isSameLoadStore(Value *ptr_addr, Value *obj_addr);
-  bool isPointerOperand(Value *V);
-  bool isDoublePointer(Type *T);
 };
 
 }

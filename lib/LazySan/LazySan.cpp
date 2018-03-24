@@ -221,6 +221,10 @@ static bool isUnionTy(Type *Ty) {
     && cast<StructType>(Ty)->getName().startswith("union");
 }
 
+static bool isDoublePointer(Type *T) {
+  return T->isPointerTy() && T->getContainedType(0)->isPointerTy();
+}
+
 // IR optimizations may convert pointer types into integer types. Need to find
 // those cases
 // This should always return false if bitcast folding is disabled. The preferred
@@ -455,6 +459,14 @@ bool LazySanVisitor::maybeHeapPtr(Value *V, SmallPtrSetImpl<Value *> &Visited) {
   }
 
   assert(0);
+  return false;
+}
+
+static bool isSameLoadStore(Value *ptr_addr, Value *obj_addr) {
+  if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(obj_addr))
+    if (LoadInst *LI = dyn_cast<LoadInst>(GEP->getPointerOperand()))
+      if (ptr_addr == LI->getPointerOperand())
+        return true;
   return false;
 }
 
