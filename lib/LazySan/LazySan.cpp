@@ -488,6 +488,13 @@ static bool isSameLoadStore(Value *ptr_addr, Value *obj_addr) {
 
 // TODO: complete vectorization support
 void LazySanVisitor::visitStoreInst(StoreInst &I) {
+  // This is an ugly trick to avoid static inline code in library functions
+  // from getting instrumented while the other library code is not instrumented
+  MDNode *MDN = I.getMetadata(LLVMContext::MD_dbg);
+  const DILocation *Loc = dyn_cast_or_null<DILocation>(MDN);
+  if (!Loc || Loc->getFilename().startswith("/usr"))
+    return;
+
   Value *Ptr = I.getValueOperand();
   Value *Lhs = I.getPointerOperand();
   Type *Ty = Ptr->getType();
@@ -498,8 +505,9 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
   // TODO: make sure that we are not skipping any instructions we need to handle
   // and skipping those we don't
   SmallPtrSet<Value *, 8> Visited;
-  if (ScalarTy->isFloatingPointTy() ||
-      (!ScalarTy->isPointerTy() && !isCastFromPtr(Ptr, Visited, false))) {
+  if (ScalarTy->isFloatingPointTy()
+      || (Ty->isPointerTy() && Ty->getPointerElementType()->isFunctionTy())
+      || (!ScalarTy->isPointerTy() && !isCastFromPtr(Ptr, Visited, false))) {
     // Ptr is probably not a pointer. Don't need to increase refcnt
     NeedInc = false;
     // Here we search for possible union type store.
@@ -509,11 +517,6 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
     if (!shouldInstrument(Lhs, Visited, false, false))
       return;
   }
-
-  MDNode *MDN = I.getMetadata(LLVMContext::MD_dbg);
-  const DILocation *Loc = dyn_cast_or_null<DILocation>(MDN);
-  if (!Loc || Loc->getFilename().startswith("/usr"))
-    return;
 
   if (EnableDSA) {
     DSGraph *G = DSA->getDSGraph(*I.getFunction());
@@ -527,9 +530,6 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
       }
     }
   }
-
-  if (Ty->isPointerTy() && Ty->getPointerElementType()->isFunctionTy())
-    return;
 
   if (isSameLoadStore(Lhs, Ptr))
     return;
