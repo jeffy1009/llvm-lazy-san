@@ -718,8 +718,8 @@ bool LazySan::runOnFunction(Function &F) {
 
 // IMPORTANT: make sure these include all functions in the static lib
 static char const *LSFuncs[] = {
-  "atexit_hook", "init_lazysan", "sys_mmap", "alloc_obj_info", "get_obj_info", "delete_obj_info", "ls_free", "ls_dec_refcnt", "ls_inc_refcnt", "ls_incdec_refcnt_noinc", "ls_incdec_refcnt", "ls_copy_ptrlog", "ls_incdec_copy_ptrlog", "ls_incdec_move_ptrlog", "ls_check_ptrlog", "ls_inc_ptrlog", "ls_dec_ptrlog_int", "ls_dec_ptrlog", "ls_dec_ptrlog_addr", "alloc_common", "free_common", "realloc_hook",
-  "metaset_4", "metaset_8", "metaget_4", "metaget_8",
+  "atexit_hook", "init_lazysan", "sys_mmap", "alloc_obj_info", "get_obj_info", "delete_obj_info", "ls_free", "ls_dec_refcnt", "ls_inc_refcnt", "ls_incdec_refcnt_noinc", "ls_incdec_refcnt", "ls_copy_ptrlog", "ls_incdec_copy_ptrlog", "ls_incdec_move_ptrlog", "ls_check_ptrlog", "ls_inc_ptrlog", "ls_dec_ptrlog_int", "ls_dec_ptrlog", "ls_dec_ptrlog_addr", "alloc_common", "free_common", "realloc_hook", "timer_handler", "ls_check_dangling", "ls_check_dangling_range",
+  "metaset_8", "metaget_8",
   "RBTreeCompare", "RBTreeCreate", "LeftRotate", "RightRotate", "TreeInsertHelp", "RBTreeInsert", "TreeSuccessor", "InorderTreePrint", "TreeDestHelper", "RBTreeDestroy", "RBTreePrint", "RBExactQuery", "RBDeleteFixUp", "RBDelete"
 };
 
