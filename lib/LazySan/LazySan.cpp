@@ -631,18 +631,6 @@ void LazySanVisitor::handleMemTransfer(CallInst *I) {
     Builder.CreateCall(IncDecMovePtrLog, {DestCast, SrcCast, Size});
 }
 
-void LazySanVisitor::decreaseRefcntAtFree(CallInst *I) {
-  Value *Dest = I->getArgOperand(0)->stripPointerCasts();
-  if (!isa<LoadInst>(Dest))
-    return;
-
-  Value *LoadAddr = cast<LoadInst>(Dest)->getPointerOperand();
-  IRBuilder<> Builder(I);
-  Value *Cast =
-    Builder.CreateBitCast(LoadAddr, Type::getInt8PtrTy(I->getContext()));
-  Builder.CreateCall(IncDecRC_noinc, {Cast});
-}
-
 void LazySanVisitor::visitCallSite(CallSite CS) {
   Instruction &I = *CS.getInstruction();
   Function *CalledFunc = CS.getCalledFunction();
@@ -652,12 +640,6 @@ void LazySanVisitor::visitCallSite(CallSite CS) {
   if (IntrinsicInst *Intr = dyn_cast<IntrinsicInst>(&I))
     if (Intr->getIntrinsicID() == Intrinsic::lifetime_end)
       return handleLifetimeIntr(Intr);
-
-  if (CalledFunc->getName().equals("free")
-      || CalledFunc->getName().equals("_ZdlPv")
-      || CalledFunc->getName().equals("_ZdaPv")
-      || CalledFunc->getName().equals("realloc"))
-    return decreaseRefcntAtFree(cast<CallInst>(&I));
 
   if (isa<MemSetInst>(&I)
       || CalledFunc->getName().equals("memset"))
