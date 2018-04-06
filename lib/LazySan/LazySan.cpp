@@ -498,16 +498,19 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
   Value *Ptr = I.getValueOperand();
   Value *Lhs = I.getPointerOperand();
   Type *Ty = Ptr->getType();
-  Type *ScalarTy = Ty->getScalarType();
-  assert(!(Ty->isVectorTy() && !ScalarTy->isFloatingPointTy())
-         && "vectorization support not yet complete!");
+  if (Ty->isVectorTy()) {
+    assert(!isPointer(Ty->getScalarType())
+           && "vectorization support not yet complete!");
+    return;
+  }
+
   bool NeedInc = true;
   // TODO: make sure that we are not skipping any instructions we need to handle
   // and skipping those we don't
   SmallPtrSet<Value *, 8> Visited;
-  if (ScalarTy->isFloatingPointTy()
+  if (Ty->isFloatingPointTy()
       || (Ty->isPointerTy() && Ty->getPointerElementType()->isFunctionTy())
-      || (!ScalarTy->isPointerTy() && !isCastFromPtr(Ptr, Visited, false))) {
+      || (!Ty->isPointerTy() && !isCastFromPtr(Ptr, Visited, false))) {
     // Ptr is probably not a pointer. Don't need to increase refcnt
     NeedInc = false;
     // Here we search for possible union type store.
