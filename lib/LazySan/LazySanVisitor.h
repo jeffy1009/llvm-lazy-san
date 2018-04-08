@@ -54,7 +54,8 @@ class LazySanVisitor : public InstVisitor<LazySanVisitor> {
   bool isCastFromPtr(Value *V, SmallPtrSetImpl<Value *> &Visited,
                      bool LookForDoublePtr);
   bool shouldInstrument(Value *V, SmallPtrSetImpl<Value *> &Visited,
-                        bool LookForUnion, bool LookForDoublePtr);
+                        bool LookForUnion, bool LookForDoublePtr,
+                        bool TrackI8);
   bool maybeHeapPtr(Value *V, SmallPtrSetImpl<Value *> &Visited);
 
   void handleLifetimeIntr(IntrinsicInst *I);

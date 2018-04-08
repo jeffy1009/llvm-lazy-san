@@ -328,7 +328,8 @@ bool LazySanVisitor::isCastFromPtr(Value *V,
 
 bool LazySanVisitor::shouldInstrument(Value *V,
                                       SmallPtrSetImpl<Value *> &Visited,
-                                      bool LookForUnion, bool LookForDoublePtr) {
+                                      bool LookForUnion, bool LookForDoublePtr,
+                                      bool TrackI8) {
   // Avoid recursion due to PHIs in Loops
   if (!Visited.insert(V).second)
     return false;
@@ -364,6 +365,8 @@ bool LazySanVisitor::shouldInstrument(Value *V,
               && ElemTy->getArrayElementType()->isPointerTy())
              || !checkArrayTy(ElemTy, true));
 #endif
+    if (TrackI8 && ElemTy->isIntegerTy(8))
+      return true;
     if (!LookForUnion) {
       if (LookForDoublePtr) {
         if (isDoublePointer(ElemTy))
@@ -373,7 +376,7 @@ bool LazySanVisitor::shouldInstrument(Value *V,
           return true;
       }
     }
-    return shouldInstrument(BCI, Visited, LookForUnion, LookForDoublePtr);
+    return shouldInstrument(BCI, Visited, LookForUnion, LookForDoublePtr, TrackI8);
   }
 
   if (isa<GetElementPtrInst>(V)
@@ -389,7 +392,7 @@ bool LazySanVisitor::shouldInstrument(Value *V,
         return true;
     return shouldInstrument(GEP->getOperand(0), Visited,
                             GEP->getNumOperands() > 2 ? true : false,
-                            LookForDoublePtr);
+                            LookForDoublePtr, TrackI8);
   }
 
   switch (cast<Instruction>(V)->getOpcode()) {
@@ -403,22 +406,22 @@ bool LazySanVisitor::shouldInstrument(Value *V,
     if (LookForDoublePtr) // TODO: look further?
       return false;
     return shouldInstrument(cast<LoadInst>(V)->getPointerOperand(), Visited,
-                     LookForUnion, true);
+                            LookForUnion, true, TrackI8);
   }
   case Instruction::PHI: {
     PHINode *Phi = cast<PHINode>(V);
     bool Should = false;
     for (unsigned i = 0, e = Phi->getNumIncomingValues(); i != e; i++)
       Should |= shouldInstrument(Phi->getIncomingValue(i), Visited,
-                                 LookForUnion, LookForDoublePtr);
+                                 LookForUnion, LookForDoublePtr, TrackI8);
     return Should;
   }
   case Instruction::Select: {
     SelectInst *SI = cast<SelectInst>(V);
     return shouldInstrument(SI->getTrueValue(), Visited, LookForUnion,
-                            LookForDoublePtr)
+                            LookForDoublePtr, TrackI8)
       || shouldInstrument(SI->getFalseValue(), Visited, LookForUnion,
-                          LookForDoublePtr);
+                          LookForDoublePtr, TrackI8);
   }
   default:;
   }
@@ -517,7 +520,10 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
     // We need this because pointer may be overwritten by non-pointer
     // (and we have to decrease refcnt in that case)
     Visited.clear();
-    if (!shouldInstrument(Lhs, Visited, false, false))
+    const DataLayout &DL = I.getModule()->getDataLayout();
+    bool TrackI8 = isa<Constant>(Ptr) && cast<Constant>(Ptr)->isNullValue()
+      && (DL.getTypeSizeInBits(Ty) == DL.getPointerSizeInBits());
+    if (!shouldInstrument(Lhs, Visited, false, false, TrackI8))
       return;
   }
 
