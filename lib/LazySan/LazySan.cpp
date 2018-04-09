@@ -707,25 +707,70 @@ bool LazySan::runOnFunction(Function &F) {
   return true;
 }
 
-// IMPORTANT: make sure these include all functions in the static lib
-static char const *LSFuncs[] = {
-  "atexit_hook", "init_lazysan", "sys_mmap", "alloc_obj_info", "get_obj_info", "delete_obj_info", "ls_free", "ls_dec_refcnt", "ls_inc_refcnt", "ls_incdec_refcnt_noinc", "ls_incdec_refcnt", "ls_copy_ptrlog", "ls_incdec_copy_ptrlog", "ls_incdec_move_ptrlog", "ls_check_ptrlog", "ls_inc_ptrlog", "ls_dec_ptrlog_int", "ls_dec_ptrlog", "ls_dec_ptrlog_addr", "alloc_common", "free_common", "realloc_hook", "timer_handler", "ls_check_dangling", "ls_check_dangling_range",
-  "metaset_8", "metaget_8",
-  "RBTreeCompare", "RBTreeCreate", "LeftRotate", "RightRotate", "TreeInsertHelp", "RBTreeInsert", "TreeSuccessor", "InorderTreePrint", "TreeDestHelper", "RBTreeDestroy", "RBTreePrint", "RBExactQuery", "RBDeleteFixUp", "RBDelete"
-};
-
-static bool isLSFunc(StringRef name) {
-  bool Found = false;
-  for (unsigned int i = 0; i < (sizeof(LSFuncs) / sizeof(LSFuncs[0])); ++i)
-    Found |= StringRef(LSFuncs[i]).equals(name);
-  return Found;
-}
-
 bool LazySan::runOnModule(Module &M) {
+  LLVMContext &C = M.getContext();
+  AttributeSet Attr =
+    AttributeSet().addAttribute(C, AttributeSet::FunctionIndex,
+                                Attribute::NoUnwind);
+  Type *VoidTy = Type::getVoidTy(C), *I8PtrTy = Type::getInt8PtrTy(C),
+    *I64Ty = Type::getInt64Ty(C);
+
+  Function *F = cast<Function>
+    (M.getOrInsertFunction("ls_incdec_refcnt",
+                           FunctionType::get(VoidTy, {I8PtrTy, I8PtrTy}, false),
+                           Attr));
+  /****    empty    ****/       F->setDoesNotAlias(2);
+  F->setDoesNotCapture(1);      F->setDoesNotCapture(2);
+  F->setDoesNotAccessMemory(1); F->setOnlyReadsMemory(2);
+
+  F = cast<Function>
+    (M.getOrInsertFunction("ls_incdec_refcnt_noinc",
+                           FunctionType::get(VoidTy, {I8PtrTy}, false), Attr));
+  F->setDoesNotAlias(1);
+  F->setDoesNotCapture(1);
+  F->setOnlyReadsMemory(1);
+
+  F = cast<Function>
+    (M.getOrInsertFunction("ls_incdec_copy_ptrlog",
+                           FunctionType::get(VoidTy, {I8PtrTy, I8PtrTy, I64Ty}, false),
+                           Attr));
+  F->setDoesNotAlias(1);    F->setDoesNotAlias(2);
+  F->setDoesNotCapture(1);  F->setDoesNotCapture(2);
+  F->setOnlyReadsMemory(1); F->setOnlyReadsMemory(2);
+
+  F = cast<Function>
+    (M.getOrInsertFunction("ls_incdec_move_ptrlog",
+                           FunctionType::get(VoidTy, {I8PtrTy, I8PtrTy, I64Ty}, false),
+                           Attr));
+  F->setDoesNotAlias(1);    F->setDoesNotAlias(2);
+  F->setDoesNotCapture(1);  F->setDoesNotCapture(2);
+  F->setOnlyReadsMemory(1); F->setOnlyReadsMemory(2);
+
+  F = cast<Function>
+    (M.getOrInsertFunction("ls_check_ptrlog",
+                           FunctionType::get(VoidTy, {I8PtrTy, I64Ty}, false), Attr));
+  F->setDoesNotAlias(1);
+  F->setDoesNotCapture(1);
+  F->setDoesNotAccessMemory(1);
+
+  F = cast<Function>
+    (M.getOrInsertFunction("ls_dec_ptrlog",
+                           FunctionType::get(VoidTy, {I8PtrTy, I64Ty}, false), Attr));
+  F->setDoesNotAlias(1);
+  F->setDoesNotCapture(1);
+  F->setOnlyReadsMemory(1);
+
+  F = cast<Function>
+    (M.getOrInsertFunction("ls_dec_ptrlog_addr",
+                           FunctionType::get(VoidTy, {I8PtrTy, I8PtrTy}, false), Attr));
+  F->setDoesNotAlias(1);    F->setDoesNotAlias(2);
+  F->setDoesNotCapture(1);  F->setDoesNotCapture(2);
+  F->setOnlyReadsMemory(1); F->setDoesNotAccessMemory(2);
+
   dbgs() << "LazySan Instrumentation Start\n";
   DEBUG(dbgs() << "Instrumented functions: ");
   for (Function &F : M.functions()) {
-    if (F.empty() || isLSFunc(F.getName()))
+    if (F.empty())
       continue;
 
     DEBUG(dbgs() << F.getName() << ' ');
