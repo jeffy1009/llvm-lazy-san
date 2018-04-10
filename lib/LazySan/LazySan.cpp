@@ -586,14 +586,17 @@ static void findAllocaInst(Value *V, AllocaInst *&Alloca,
 }
 
 void LazySanVisitor::handleLifetimeIntr(IntrinsicInst *I) {
-  IRBuilder<> Builder(I);
+  Value *V = I->getArgOperand(1);
+  if (isa<UndefValue>(V))
+    return;
+
   AllocaInst *Dest = nullptr;
   SmallPtrSet<Value *, 8> Visited;
-  findAllocaInst(I->getArgOperand(1), Dest, Visited);
+  findAllocaInst(V, Dest, Visited);
   assert(Dest && !Dest->isArrayAllocation());
 
-  // We clear ptrlog for all types but optimize when we decrease refcnts.
-  // (see comments in visitAllocaInst)
+  IRBuilder<> Builder(I);
+  // optimize when we decrease refcnts.
   Value *Size = I->getArgOperand(0);
   if (checkTy(Dest->getType()))
     handleScopeExit(Builder, Dest, Size);
