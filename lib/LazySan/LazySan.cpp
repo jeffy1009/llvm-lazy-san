@@ -607,12 +607,6 @@ void LazySanVisitor::handleMemSet(CallInst *I) {
   Value *DestCast =
     Builder.CreateBitCast(Dest, Type::getInt8PtrTy(I->getContext()));
   Value *Size = I->getArgOperand(2);
-  if (!checkTy(Dest->getType())) {
-    if (EnableChecks)
-      Builder.CreateCall(CheckPtrLog, {DestCast, Size});
-    return;
-  }
-
   Builder.CreateCall(DecPtrLog, {DestCast, Size});
 }
 
@@ -625,14 +619,6 @@ void LazySanVisitor::handleMemTransfer(CallInst *I) {
   Value *SrcCast =
     Builder.CreateBitCast(Src, Type::getInt8PtrTy(I->getContext()));
   Value *Size = I->getArgOperand(2);
-  if (!checkTy(Dest->getType()) && !checkTy(Src->getType())) {
-    if (EnableChecks) {
-      Builder.CreateCall(CheckPtrLog, {DestCast, Size});
-      Builder.CreateCall(CheckPtrLog, {SrcCast, Size});
-    }
-    return;
-  }
-
   if (isa<MemCpyInst>(I)
       || I->getCalledFunction()->getName().equals("memcpy"))
     Builder.CreateCall(IncDecCpyPtrLog, {DestCast, SrcCast, Size});
