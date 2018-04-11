@@ -481,11 +481,149 @@ bool LazySanVisitor::maybeHeapPtr(Value *V, SmallPtrSetImpl<Value *> &Visited) {
   return false;
 }
 
-static bool isSameLoadStore(Value *ptr_addr, Value *obj_addr) {
-  if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(obj_addr))
+static bool setRoot(Value *V, Value *&CurRoot) {
+  if (!CurRoot) {
+    CurRoot = V;
+    return true;
+  }
+
+  if (CurRoot==V)
+    return true;
+
+  return false;
+}
+
+// returns true if a unique root is found
+bool LazySanVisitor::findLHSRoot(Value *V, SmallPtrSetImpl<Value *> &Visited,
+                                 Value *&CurRoot) {
+  // Avoid recursion due to PHIs in Loops
+  if (!Visited.insert(V).second)
+    return true;
+
+  if (isa<Argument>(V))
+    return setRoot(V, CurRoot);
+
+  if (isa<Constant>(V)) {
+    if (isa<GlobalVariable>(V))
+      return setRoot(V, CurRoot);
+
+    if (isa<ConstantPointerNull>(V) || isa<UndefValue>(V))
+      return true;
+
+    if (isa<ConstantExpr>(V)
+        && cast<ConstantExpr>(V)->getOpcode() == Instruction::IntToPtr)
+      return findLHSRoot(cast<User>(V)->getOperand(0), Visited, CurRoot);
+  }
+
+  if (isa<BitCastOperator>(V))
+    return findLHSRoot(cast<User>(V)->getOperand(0), Visited, CurRoot);
+
+  if (GEPOperator *GEP = dyn_cast<GEPOperator>(V)) {
+    if (GEP->hasAllZeroIndices())
+      return findLHSRoot(GEP->getPointerOperand(), Visited, CurRoot);
+    return setRoot(V, CurRoot);
+  }
+
+  switch (cast<Instruction>(V)->getOpcode()) {
+  case Instruction::Alloca:
+  case Instruction::Call:
+  case Instruction::ExtractValue:
+  case Instruction::Invoke:
+  case Instruction::Load:
+    return setRoot(V, CurRoot);
+  case Instruction::IntToPtr:
+    return findLHSRoot(cast<User>(V)->getOperand(0), Visited, CurRoot);
+  case Instruction::PHI: {
+    PHINode *Phi = cast<PHINode>(V);
+    bool Should = true;
+    for (unsigned i = 0, e = Phi->getNumIncomingValues(); i != e; i++)
+      Should &= findLHSRoot(Phi->getIncomingValue(i), Visited, CurRoot);
+    return Should;
+  }
+  case Instruction::Select: {
+    SelectInst *SI = cast<SelectInst>(V);
+    return findLHSRoot(SI->getTrueValue(), Visited, CurRoot)
+      && findLHSRoot(SI->getFalseValue(), Visited, CurRoot);
+  }
+  default:;
+  }
+
+  assert(0);
+  return false;
+}
+
+bool LazySanVisitor::findPtrRoot(Value *V, SmallPtrSetImpl<Value *> &Visited,
+                                 Value *&CurRoot) {
+  if (!Visited.insert(V).second)
+    return true;
+
+  if (isa<Argument>(V))
+    return false;
+
+  if (isa<Constant>(V) || AA->pointsToConstantMemory(V))
+    return false;
+
+  switch (cast<Instruction>(V)->getOpcode()) {
+  case Instruction::Alloca:
+  case Instruction::Call:
+  case Instruction::ExtractValue:
+  case Instruction::Invoke:
+    return false;
+  case Instruction::PtrToInt:
+  case Instruction::IntToPtr:
+    return findPtrRoot(cast<User>(V)->getOperand(0), Visited, CurRoot);
+  case Instruction::Load: {
+    SmallPtrSet<Value *, 8> Visited2;
+    Value *LhsRoot = 0;
+    if (!findLHSRoot(cast<LoadInst>(V)->getPointerOperand(), Visited2, LhsRoot))
+      return false;
+    assert(LhsRoot);
+    return setRoot(V, CurRoot);
+  }
+  case Instruction::BitCast:
+    return findPtrRoot(cast<BitCastInst>(V)->stripPointerCasts(), Visited,
+                       CurRoot);
+  case Instruction::GetElementPtr:
+    return findPtrRoot(cast<GetElementPtrInst>(V)->getPointerOperand(), Visited,
+                       CurRoot);
+  case Instruction::PHI: {
+    PHINode *Phi = cast<PHINode>(V);
+    bool Maybe = true;
+    for (unsigned i = 0, e = Phi->getNumIncomingValues(); i != e; i++)
+      Maybe &= findPtrRoot(Phi->getIncomingValue(i), Visited, CurRoot);
+    return Maybe;
+  }
+  case Instruction::Select: {
+    SelectInst *SI = cast<SelectInst>(V);
+    return findPtrRoot(SI->getTrueValue(), Visited, CurRoot)
+      && findPtrRoot(SI->getFalseValue(), Visited, CurRoot);
+  }
+  default:;
+  }
+
+  assert(0);
+  return false;
+}
+
+bool LazySanVisitor::isSameLoadStore(Value *Lhs, Value *Ptr) {
+  if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(Ptr))
     if (LoadInst *LI = dyn_cast<LoadInst>(GEP->getPointerOperand()))
-      if (ptr_addr == LI->getPointerOperand())
+      if (Lhs == LI->getPointerOperand())
         return true;
+
+  SmallPtrSet<Value *, 8> Visited;
+  Value *LhsRoot = 0;
+  if (!findLHSRoot(Lhs, Visited, LhsRoot))
+    return false;
+
+  Visited.clear();
+  Value *PtrRoot = 0;
+  if (!findPtrRoot(Ptr, Visited, PtrRoot))
+    return false;
+
+  if (LhsRoot == PtrRoot)
+    return true;
+
   return false;
 }
 
@@ -540,16 +678,17 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
     }
   }
 
-  if (isSameLoadStore(Lhs, Ptr))
-    return;
-
   // TODO: determine if the store is the first store to the location
   assert(!AA->pointsToConstantMemory(Lhs));
 
   Visited.clear();
-  ++NumStoreInstrument;
   if (NeedInc && !maybeHeapPtr(Ptr, Visited))
     NeedInc = false;
+
+  if (NeedInc && isSameLoadStore(Lhs, Ptr))
+    return;
+
+  ++NumStoreInstrument;
 
   IRBuilder<> Builder(&I);
   setNearestDebugLocation(Builder, &I);

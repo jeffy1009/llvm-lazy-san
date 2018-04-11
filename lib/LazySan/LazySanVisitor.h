@@ -57,6 +57,11 @@ class LazySanVisitor : public InstVisitor<LazySanVisitor> {
                         bool LookForUnion, bool LookForDoublePtr,
                         bool TrackI8);
   bool maybeHeapPtr(Value *V, SmallPtrSetImpl<Value *> &Visited);
+  bool findLHSRoot(Value *V, SmallPtrSetImpl<Value *> &Visited,
+                   Value *&CurRoot);
+  bool findPtrRoot(Value *V, SmallPtrSetImpl<Value *> &Visited,
+                   Value *&CurRoot);
+  bool isSameLoadStore(Value *Lhs, Value *Ptr);
 
   void handleLifetimeIntr(IntrinsicInst *I);
   void handleMemSet(CallInst *I);
