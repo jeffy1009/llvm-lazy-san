@@ -522,9 +522,6 @@ void PassManagerBuilder::addLTOOptimizationPasses(legacy::PassManagerBase &PM) {
   // Remove unused arguments from functions.
   PM.add(createDeadArgEliminationPass());
 
-  if (OptLazySan)
-    PM.add(new LazySan());
-
   // Reduce the code after globalopt and ipsccp.  Both can open up significant
   // simplification opportunities, and both can propagate functions through
   // function pointers.  When this happens, we often have to resolve varargs
@@ -573,6 +570,9 @@ void PassManagerBuilder::addLTOOptimizationPasses(legacy::PassManagerBase &PM) {
 
   // Nuke dead stores.
   PM.add(createDeadStoreEliminationPass());
+
+  if (OptLazySan)
+    PM.add(new LazySan());
 
   // More loops are countable; try to optimize them.
   PM.add(createIndVarSimplifyPass());
@@ -628,11 +628,6 @@ void PassManagerBuilder::addLateLTOOptimizationPasses(
 }
 
 void PassManagerBuilder::populateLTOPassManager(legacy::PassManagerBase &PM) {
-  // [lazy-san] diable vectorization for now. TODO: add support
-  BBVectorize = false;
-  SLPVectorize = false;
-  LoopVectorize = false;
-
   if (LibraryInfo)
     PM.add(new TargetLibraryInfoWrapperPass(*LibraryInfo));
 
@@ -641,6 +636,10 @@ void PassManagerBuilder::populateLTOPassManager(legacy::PassManagerBase &PM) {
 
   if (OptLevel > 1)
     addLTOOptimizationPasses(PM);
+  else
+    if (OptLazySan)
+      PM.add(new LazySan());
+
 
   // Create a function that performs CFI checks for cross-DSO calls with targets
   // in the current module.
