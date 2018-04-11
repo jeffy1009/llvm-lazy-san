@@ -270,9 +270,7 @@ bool LazySanVisitor::isCastFromPtr(Value *V,
       return true;
   }
 
-  if (isa<BitCastInst>(V)
-      || (isa<ConstantExpr>(V)
-          && cast<ConstantExpr>(V)->getOpcode() == Instruction::BitCast)) {
+  if (isa<BitCastOperator>(V)) {
     Value *BCI = cast<User>(V)->getOperand(0);
     if (LookForDoublePtr) {
       if (isDoublePointer(BCI->getType()))
@@ -284,9 +282,7 @@ bool LazySanVisitor::isCastFromPtr(Value *V,
     return isCastFromPtr(BCI, Visited, LookForDoublePtr);
   }
 
-  if (isa<GetElementPtrInst>(V)
-      || (isa<ConstantExpr>(V)
-           && cast<ConstantExpr>(V)->getOpcode() == Instruction::GetElementPtr))
+  if (isa<GEPOperator>(V))
     return false;
 
   switch (cast<Instruction>(V)->getOpcode()) {
@@ -347,9 +343,7 @@ bool LazySanVisitor::shouldInstrument(Value *V,
   }
 
   // TODO: Handling bitcasts and getelementptrs are not 100% accurate.
-  if (isa<BitCastInst>(V)
-      || (isa<ConstantExpr>(V)
-          && cast<ConstantExpr>(V)->getOpcode() == Instruction::BitCast)) {
+  if (isa<BitCastOperator>(V)) {
     Value *BCI = cast<User>(V)->getOperand(0);
     // BCI should be a pointer type
     Type *ElemTy = BCI->getType()->getPointerElementType();
@@ -379,9 +373,7 @@ bool LazySanVisitor::shouldInstrument(Value *V,
     return shouldInstrument(BCI, Visited, LookForUnion, LookForDoublePtr, TrackI8);
   }
 
-  if (isa<GetElementPtrInst>(V)
-      || (isa<ConstantExpr>(V)
-           && cast<ConstantExpr>(V)->getOpcode() == Instruction::GetElementPtr)) {
+  if (isa<GEPOperator>(V)) {
     // TODO: currently if we meet any union types with any pointer field in it,
     // we decide to instrument it
     // TODO: checkStructTy will only visit one of the union member. fix it.
