@@ -265,9 +265,12 @@ bool LazySanVisitor::isCastFromPtr(Value *V,
     if (isa<ConstantInt>(V) || isa<ConstantFP>(V) || isa<ConstantPointerNull>(V)
         || isa<GlobalVariable>(V) || isa<UndefValue>(V))
       return false;
-    if (isa<ConstantExpr>(V)
-        && cast<ConstantExpr>(V)->getOpcode() == Instruction::PtrToInt)
-      return true;
+    if (isa<ConstantExpr>(V)) {
+      if (cast<ConstantExpr>(V)->getOpcode() == Instruction::PtrToInt)
+        return true;
+      if (cast<ConstantExpr>(V)->getOpcode() == Instruction::IntToPtr)
+        return false;
+    }
   }
 
   if (isa<BitCastOperator>(V)) {
@@ -289,6 +292,7 @@ bool LazySanVisitor::isCastFromPtr(Value *V,
   case Instruction::Alloca:
   case Instruction::Call:
   case Instruction::ExtractValue:
+  case Instruction::ICmp:
   case Instruction::Invoke:
     return false;
   case Instruction::PtrToInt:
@@ -348,16 +352,17 @@ bool LazySanVisitor::shouldInstrument(Value *V,
     // BCI should be a pointer type
     Type *ElemTy = BCI->getType()->getPointerElementType();
     assert(!(ElemTy->isVectorTy() && !ElemTy->getScalarType()->isIntegerTy()));
+#ifndef NDEBUG
     // TODO: there's an exceptional case where the following assertion fails in perlbench
     // in S_unpack_rec function due to SROA.
     // assert(LookForUnion
     //        || !(ElemTy->isStructTy() &&
     //             !(isUnionTy(ElemTy) && ElemTy->getStructNumElements()==1)));
-#ifndef NDEBUG
-    if (ElemTy->isArrayTy())
-      assert((ElemTy->getArrayNumElements() == 1
-              && ElemTy->getArrayElementType()->isPointerTy())
-             || !checkArrayTy(ElemTy, true));
+    // CHECK: exceptional case in hmmer
+    // if (ElemTy->isArrayTy())
+    //   assert((ElemTy->getArrayNumElements() == 1
+    //           && ElemTy->getArrayElementType()->isPointerTy())
+    //          || !checkArrayTy(ElemTy, true));
 #endif
     if (TrackI8 && ElemTy->isIntegerTy(8))
       return true;
@@ -520,11 +525,10 @@ bool LazySanVisitor::findLHSRoot(Value *V, SmallPtrSetImpl<Value *> &Visited,
   case Instruction::Alloca:
   case Instruction::Call:
   case Instruction::ExtractValue:
+  case Instruction::IntToPtr:
   case Instruction::Invoke:
   case Instruction::Load:
     return setRoot(V, CurRoot);
-  case Instruction::IntToPtr:
-    return findLHSRoot(cast<User>(V)->getOperand(0), Visited, CurRoot);
   case Instruction::PHI: {
     PHINode *Phi = cast<PHINode>(V);
     bool Should = true;
@@ -560,9 +564,9 @@ bool LazySanVisitor::findPtrRoot(Value *V, SmallPtrSetImpl<Value *> &Visited,
   case Instruction::Call:
   case Instruction::ExtractValue:
   case Instruction::Invoke:
+  case Instruction::IntToPtr:
     return false;
   case Instruction::PtrToInt:
-  case Instruction::IntToPtr:
     return findPtrRoot(cast<User>(V)->getOperand(0), Visited, CurRoot);
   case Instruction::Load: {
     SmallPtrSet<Value *, 8> Visited2;
@@ -701,6 +705,9 @@ void LazySanVisitor::visitStoreInst(StoreInst &I) {
 
 static void findAllocaInst(Value *V, AllocaInst *&Alloca,
                            SmallPtrSetImpl<Value *> &Visited) {
+  if (isa<UndefValue>(V))
+    return;
+
   if (!Visited.insert(V).second)
     return;
 
@@ -717,13 +724,9 @@ static void findAllocaInst(Value *V, AllocaInst *&Alloca,
 }
 
 void LazySanVisitor::handleLifetimeIntr(IntrinsicInst *I) {
-  Value *V = I->getArgOperand(1);
-  if (isa<UndefValue>(V))
-    return;
-
   AllocaInst *Dest = nullptr;
   SmallPtrSet<Value *, 8> Visited;
-  findAllocaInst(V, Dest, Visited);
+  findAllocaInst(I->getArgOperand(1), Dest, Visited);
   assert(Dest && !Dest->isArrayAllocation());
 
   IRBuilder<> Builder(I);
