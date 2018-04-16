@@ -729,7 +729,10 @@ void LazySanVisitor::handleLifetimeIntr(IntrinsicInst *I) {
   AllocaInst *Dest = nullptr;
   SmallPtrSet<Value *, 8> Visited;
   findAllocaInst(I->getArgOperand(1), Dest, Visited);
-  assert(Dest && !Dest->isArrayAllocation());
+  if (!Dest)
+    return;
+
+  assert(!Dest->isArrayAllocation());
 
   IRBuilder<> Builder(I);
   // optimize when we decrease refcnts.
