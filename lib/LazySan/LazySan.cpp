@@ -28,6 +28,8 @@ EnableDSA("lazysan-enable-dsa",
              cl::desc("Enable DSA in lazy-san which can slow down build time"),
              cl::init(false));
 
+static unsigned long NumFunctionInstrument;
+static unsigned long NumFunctionNotInstrument;
 static unsigned long NumStoreInstrument;
 static unsigned long NumStoreInstrumentIncDec;
 static unsigned long NumStoreInstrumentNoInc;
@@ -896,14 +898,26 @@ bool LazySan::runOnModule(Module &M) {
     if (F.empty())
       continue;
 
+    if (!F.getMetadata(LLVMContext::MD_dbg)) {
+      ++NumFunctionNotInstrument;
+      continue;
+    }
+
     DEBUG(dbgs() << F.getName() << ' ');
+    ++NumFunctionInstrument;
     runOnFunction(F);
   }
   DEBUG(dbgs() << '\n');
 
+  if (NumFunctionInstrument==0)
+    dbgs() << "Function has no debug metadata. Please compile with -g.\n";
+
   dbgs() << "LazySan Instrumentation End\n";
 
   // Print stats. Do this here to enable even on release build.
+  dbgs() << "# of functions instrumented/not instrumented: " << NumFunctionInstrument
+         << "/" << NumFunctionNotInstrument  << '\n';
+
   dbgs() << "# of stores instrumented: " << NumStoreInstrument
          << " (incdec: " << NumStoreInstrumentIncDec
          << ", noinc: " << NumStoreInstrumentNoInc << ")\n"
