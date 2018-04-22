@@ -34,6 +34,11 @@ static unsigned long NumStoreInstrument;
 static unsigned long NumStoreInstrumentIncDec;
 static unsigned long NumStoreInstrumentNoInc;
 static unsigned long NumRemovedByDSA;
+static unsigned long NumLifetimeInstrument;
+static unsigned long NumReturnInstrument;
+static unsigned long NumMemSetInstrument;
+static unsigned long NumMemCpyInstrument;
+static unsigned long NumMemMoveInstrument;
 
 LazySanVisitor::LazySanVisitor(Module &M, const EQTDDataStructures *dsa,
                                AliasAnalysis *aa, DominatorTree *dt,
@@ -737,10 +742,12 @@ void LazySanVisitor::handleLifetimeIntr(IntrinsicInst *I) {
   IRBuilder<> Builder(I);
   // optimize when we decrease refcnts.
   Value *Size = I->getArgOperand(0);
-  if (checkTy(Dest->getType()))
+  if (checkTy(Dest->getType())) {
     handleScopeExit(Builder, Dest, Size);
-  else if (EnableChecks)
+    ++NumLifetimeInstrument;
+  } else if (EnableChecks) {
     handleScopeExit(Builder, Dest, Size, /* Check = */ true);
+  }
 }
 
 void LazySanVisitor::handleMemSet(CallInst *I) {
@@ -750,6 +757,7 @@ void LazySanVisitor::handleMemSet(CallInst *I) {
     Builder.CreateBitCast(Dest, Type::getInt8PtrTy(I->getContext()));
   Value *Size = I->getArgOperand(2);
   Builder.CreateCall(DecPtrLog, {DestCast, Size});
+  ++NumMemSetInstrument;
 }
 
 void LazySanVisitor::handleMemTransfer(CallInst *I) {
@@ -762,10 +770,13 @@ void LazySanVisitor::handleMemTransfer(CallInst *I) {
     Builder.CreateBitCast(Src, Type::getInt8PtrTy(I->getContext()));
   Value *Size = I->getArgOperand(2);
   if (isa<MemCpyInst>(I)
-      || I->getCalledFunction()->getName().equals("memcpy"))
+      || I->getCalledFunction()->getName().equals("memcpy")) {
     Builder.CreateCall(IncDecCpyPtrLog, {DestCast, SrcCast, Size});
-  else
+    ++NumMemCpyInstrument;
+  } else {
     Builder.CreateCall(IncDecMovePtrLog, {DestCast, SrcCast, Size});
+    ++NumMemMoveInstrument;
+  }
 }
 
 void LazySanVisitor::visitCallSite(CallSite CS) {
@@ -795,6 +806,7 @@ void LazySanVisitor::visitReturnInst(ReturnInst &I) {
     Value *Size = AI->isArrayAllocation() ?
       DynamicAllocaSizeMap[AI] : Builder.getInt64(getAllocaSizeInBytes(AI));
     handleScopeExit(Builder, AI, Size);
+    ++NumReturnInstrument;
   }
 
   for (AllocaInst *AI : AllocaInstsCheck) {
@@ -925,6 +937,12 @@ bool LazySan::runOnModule(Module &M) {
          << " (incdec: " << NumStoreInstrumentIncDec
          << ", noinc: " << NumStoreInstrumentNoInc << ")\n"
          << "# of instrumentations removed by DSA: " << NumRemovedByDSA << '\n';
+
+  dbgs() << "# of memset/memcpy/memmove instrumented: " << NumMemSetInstrument
+         << "/" << NumMemCpyInstrument << "/" << NumMemMoveInstrument << '\n';
+
+  dbgs() << "# of lifetime/return instrumented: " << NumLifetimeInstrument
+         << "/" << NumReturnInstrument << '\n';
 
   return true;
 }
